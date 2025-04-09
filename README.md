@@ -12,3 +12,15 @@ An implementation of MPPI for the course 16-663 F1Tenth
 - [LAUNCH FILE]
 - [PARAM FILE?]
 - [DEBUG STATEMENTS]
+
+# Launching
+
+```
+ros2 run f1tenth_mppi mppi_node.py --ros-args --params-file src/f1tenth_mppi/config/params.yaml
+```
+
+To run without info logs
+
+```
+ros2 run f1tenth_mppi mppi_node.py --ros-args --params-file src/f1tenth_mppi/config/params.yaml --log-level warn
+```

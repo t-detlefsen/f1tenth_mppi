@@ -1,0 +1,19 @@
+MPPI:
+  ros__parameters:
+    # Publisher Parameters
+    drive_topic: "/drive"
+    occupancy_topic: "/occupancy"
+    marker_topic: "/trajectory"
+
+    # Subscriber Parameters
+    pose_topic: "ego_racecar/odom"
+    scan_topic: "/scan"
+
+    waypoint_path: "waypoints.csv"
+
+    # Model Parameters
+    wheelbase: 0.33
+    min_throttle: 1.0
+    max_throttle: 5.0
+    max_steer: 0.4189
+    dt: 0.1
