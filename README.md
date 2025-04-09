@@ -4,7 +4,7 @@ An implementation of MPPI for the course 16-663 F1Tenth
 # To-Dos
 - ~~Setup GitHub~~ 
 - ~~Setup Initial Node~~
-- Finish node infrastructure
+- ~~Finish node infrastructure~~
 - Create Occupancy Grid
 - Create Cost Map
 - Create Trajectories

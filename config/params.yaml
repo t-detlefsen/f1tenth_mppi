@@ -12,8 +12,8 @@ MPPI:
     waypoint_path: "waypoints.csv"
 
     # Model Parameters
-    wheelbase: 0.33
-    min_throttle: 1.0
-    max_throttle: 5.0
-    max_steer: 0.4189
-    dt: 0.1
+    wheelbase: 0.33 # Wheelbase (m)
+    min_throttle: 1.0 # Minimum throttle (m/s)
+    max_throttle: 5.0 # Maximum throttle (m/s)
+    max_steer: 0.4189 # Maximum steer (rad)
+    dt: 0.1 # Timestep (s)
