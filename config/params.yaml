@@ -1,5 +1,8 @@
 MPPI:
   ros__parameters:
+    visualize: True
+    waypoint_path: "waypoints.csv"
+
     # Publisher Parameters
     drive_topic: "/drive"
     occupancy_topic: "/occupancy"
@@ -8,8 +11,6 @@ MPPI:
     # Subscriber Parameters
     pose_topic: "ego_racecar/odom"
     scan_topic: "/scan"
-
-    waypoint_path: "waypoints.csv"
 
     # Model Parameters
     wheelbase: 0.33 # Wheelbase (m)

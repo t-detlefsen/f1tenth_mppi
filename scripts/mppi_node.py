@@ -75,6 +75,7 @@ class MPPI(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
+                ('visualize', None),
                 ('drive_topic', None),
                 ('occupancy_topic', None),
                 ('marker_topic', None),
@@ -188,6 +189,9 @@ class MPPI(Node):
             color (ndarray): The color of the points
         '''
 
+        if not self.get_parameter("visualize").value:
+            return
+
         # Generate MarkerArray message
         marker_array = MarkerArray()
         for j in range(points.shape[0]):
@@ -225,6 +229,9 @@ class MPPI(Node):
             points (ndarray): Nx2 array of points to publish
             color (ndarray): The color of the points
         '''
+
+        if not self.get_parameter("visualize").value:
+            return
         
         # Generate MarkerArray message
         marker_array = MarkerArray()
