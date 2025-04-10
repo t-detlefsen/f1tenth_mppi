@@ -60,10 +60,10 @@ class KBM(dynamics_model_base):
         '''
 
         # Load model parameters
-        self.L = L
-        self.min_throttle = min_throttle
-        self.max_throttle = max_throttle
-        self.max_steer = max_steer
+        dynamics_model_base.L = L
+        dynamics_model_base.min_throttle = min_throttle
+        dynamics_model_base.max_throttle = max_throttle
+        dynamics_model_base.max_steer = max_steer
         dynamics_model_base.dt = dt
 
     def dynamics(self, state: np.ndarray, action: np.ndarray) -> np.ndarray:
@@ -85,6 +85,10 @@ class KBM(dynamics_model_base):
         # Split columns
         _, _, theta = np.hsplit(state, 3)
         v, omega = np.hsplit(action, 2)
+
+        # Enforce constraints
+        v = np.clip(v, self.min_throttle, self.max_throttle)
+        omega = np.clip(omega, -self.max_steer, self.max_steer)
 
         # Perform update
         x_dot = v * np.cos(theta)
