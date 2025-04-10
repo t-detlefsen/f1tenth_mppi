@@ -5,6 +5,7 @@ class dynamics_model_base(abc.ABC):
     '''
     Base class for dynamics models
     '''
+    dt = None
 
     @abc.abstractmethod
     def dynamics(self, state: np.ndarray, action: np.ndarray) -> np.ndarray:
@@ -15,11 +16,11 @@ class dynamics_model_base(abc.ABC):
             state (ndarray): the current state of the vehicle
             action (ndarray): the action given
         Returns:
-            new_state (ndarray): the predicted state
+            state_dot (ndarray): the output derivative
         '''
         return
     
-    @abc.abstractmethod
+    @classmethod
     def predict(self, state: np.ndarray, action: np.ndarray) -> np.ndarray:
         '''
         RK4 Prediction of updated state
@@ -30,7 +31,19 @@ class dynamics_model_base(abc.ABC):
         Returns:
             new_state (ndarray): the predicted state
         '''
-        return
+
+        # Check dt is set
+        assert self.dt is not None
+        
+        # Perform prediction
+        k1 = self.dynamics(self, state, action)
+        k2 = self.dynamics(self, state + self.dt/2 * k1, action)
+        k3 = self.dynamics(self, state + self.dt/2 * k2, action)
+        k4 = self.dynamics(self, state + self.dt * k3, action)
+
+        new_state = state + (self.dt/6) * (k1 + 2 * k2 + 2 * k3 + k4)
+
+        return new_state
     
 class KBM(dynamics_model_base):
     '''
@@ -51,24 +64,33 @@ class KBM(dynamics_model_base):
         self.min_throttle = min_throttle
         self.max_throttle = max_throttle
         self.max_steer = max_steer
-        self.dt = dt
+        dynamics_model_base.dt = dt
 
     def dynamics(self, state: np.ndarray, action: np.ndarray) -> np.ndarray:
         '''
         KBM vehicle dynamics
+
+        Args:
+            state (ndarray): Nx3 array (x, y, theta)
+            action (ndarray): Nx2 array (v, omega)
+        Returns:
+            state_dot (ndarray): Nx3 array (x_dot, y_dot, theta_dot)
         '''
 
-        # TODO: Perform dynamics
-        new_state = None
+        # Check input shapes
+        assert state.shape[1] == 3
+        assert action.shape[1] == 2
+        assert state.shape[0] == action.shape[0]
+        
+        # Split columns
+        _, _, theta = np.hsplit(state, 3)
+        v, omega = np.hsplit(action, 2)
 
-        return new_state
-    
-    def predict(self, state: np.ndarray, action: np.ndarray) -> np.ndarray:
-        '''
-        KBM RK4 prediction
-        '''
+        # Perform update
+        x_dot = v * np.cos(theta)
+        y_dot = v * np.sin(theta)
+        theta_dot = omega
 
-        # TODO: Perform prediction
-        new_state = None
+        new_state = np.concatenate([x_dot, y_dot, theta_dot], axis=1)
 
         return new_state
