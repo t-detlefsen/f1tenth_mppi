@@ -98,3 +98,19 @@ class KBM(dynamics_model_base):
         new_state = np.concatenate([x_dot, y_dot, theta_dot], axis=1)
 
         return new_state
+
+# Dummy example driving straight at 1 m/s
+if __name__ == "__main__":
+    num_trajectories = 2
+    steps_trajectories = 10
+
+    model = KBM(0.33, 1.0, 5.0, 0.4189, 0.1)
+
+    v = np.ones((num_trajectories, steps_trajectories - 1, 1))
+    omega = np.zeros((num_trajectories, steps_trajectories - 1, 1))
+
+    actions = np.concatenate((v, omega), axis=2)
+
+    trajectories = np.zeros((num_trajectories, steps_trajectories, 3))
+    for i in range(steps_trajectories - 1):
+        trajectories[:, i + 1] = model.predict(trajectories[:, i], actions[:, i])

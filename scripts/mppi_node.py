@@ -11,6 +11,7 @@ from nav_msgs.msg import OccupancyGrid
 from visualization_msgs.msg import Marker, MarkerArray
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
+from geometry_msgs.msg import Point
 
 from f1tenth_mppi.utils import *
 from f1tenth_mppi.dynamics_models import KBM
@@ -85,6 +86,8 @@ class MPPI(Node):
                 ('max_throttle', None),
                 ('max_steer', None),
                 ('dt', None),
+                ('num_trajectories', None),
+                ('steps_trajectories', None),
             ])
 
     def callback(self, scan_msg: LaserScan, pose_msg: Odometry):
@@ -104,7 +107,10 @@ class MPPI(Node):
 
         # TODO: Create Cost Map
 
-        # TODO: Create Trajectories
+        # Create Trajectories
+        self.info_log.info("Sampling Trajectories")
+        trajectories, actions = self.sample_trajectories(self.get_parameter("num_trajectories").value,
+                                                         self.get_parameter("steps_trajectories").value)
 
         # TODO: Evaluate Trajectories
 
@@ -145,18 +151,105 @@ class MPPI(Node):
 
         return cost_map
 
-    def publish_markers(self, points: np.ndarray, color : np.ndarray = np.array([1.0, 0.0, 0.0])):
+    def sample_trajectories(self, num_trajectories: int, steps_trajectories: int):
         '''
-        Publish MarkerArray message
+        Sample random actions from distribution and generate trajectories using model
 
         Args:
-            points (ndarray): The points to publish
+            num_trajectories (int): The number of trajectories to sample
+            steps_trajectories (int): The number of steps for each trajectory
+        Returns:
+            trajectories (ndarray): (num_trajectories x steps_trajectories x 3) array of trajectories
+            actions (ndarray): (num_trajectories x steps_trajectories - 1) array of actions
+        '''
+
+        # TODO: Figure out smarter way of sampling trajectories
+        v = self.get_parameter("min_throttle").value + self.get_parameter("max_throttle").value * np.random.rand(num_trajectories, steps_trajectories - 1, 1)
+        omega = self.get_parameter("max_steer").value * (2 * np.random.rand(num_trajectories, steps_trajectories - 1, 1) - 1)
+
+        actions = np.concatenate((v, omega), axis=2)
+
+        # Sample trajectories
+        trajectories = np.zeros((num_trajectories, steps_trajectories, 3))
+        for i in range(steps_trajectories - 1):
+            trajectories[:, i + 1] = self.model.predict(trajectories[:, i], actions[:, i])
+
+        # Publish a subset of trajectories
+        self.publish_trajectories(trajectories)
+
+        return trajectories, actions
+
+    def publish_trajectories(self, points: np.ndarray, color: np.ndarray = np.array([0.0, 0.0, 1.0])):
+        '''
+        Publish MarkerArray message of lines
+
+        Args:
+            points (ndarray): NxMx2 array of points to publish
+            color (ndarray): The color of the points
+        '''
+
+        # Generate MarkerArray message
+        marker_array = MarkerArray()
+        for j in range(points.shape[0]):
+            for i in range(points.shape[1] - 1):
+                marker = Marker()
+                marker.header.frame_id = "ego_racecar/laser"
+                marker.id = j * points.shape[1] + i
+                marker.header.stamp = self.get_clock().now().to_msg()
+                marker.type = Marker.LINE_LIST
+                marker.action = Marker.ADD
+                marker.color.r = color[0]
+                marker.color.g = color[1]
+                marker.color.b = color[2]
+                marker.color.a = 1.0
+                marker.scale.x = 0.01
+
+                p1 = Point()
+                p1.x = points[j, i, 0]
+                p1.y = points[j, i, 1]
+                p2 = Point()
+                p2.x = points[j, i+1, 0]
+                p2.y = points[j, i+1, 1]
+
+                marker.points = [p1, p2]
+                marker_array.markers.append(marker)
+
+        # Publish MarkerArray Message
+        self.marker_pub_.publish(marker_array)
+
+    def publish_markers(self, points: np.ndarray, color: np.ndarray = np.array([1.0, 0.0, 0.0]), ns: str = ""):
+        '''
+        Publish MarkerArray message of points
+
+        Args:
+            points (ndarray): Nx2 array of points to publish
             color (ndarray): The color of the points
         '''
         
-        # TODO: Publish MarkerArray Message
+        # Generate MarkerArray message
+        marker_array = MarkerArray()
+        for i in range(len(points)):
+            marker = Marker()
+            marker.ns = ns
+            marker.header.frame_id = "ego_racecar/laser"
+            marker.id = i + 1
+            marker.header.stamp = self.get_clock().now().to_msg()
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.pose.position.x = points[i, 0]
+            marker.pose.position.y = points[i, 1]
+            marker.color.r = color[0]
+            marker.color.g = color[1]
+            marker.color.b = color[2]
+            marker.color.a = 1.0
+            marker.scale.x = 0.1
+            marker.scale.y = 0.1
+            marker.scale.z = 0.1
 
-        return
+            marker_array.markers.append(marker)
+
+        # Publish MarkerArray Message
+        self.marker_pub_.publish(marker_array)
 
 def main(args=None):
     rclpy.init(args=args)

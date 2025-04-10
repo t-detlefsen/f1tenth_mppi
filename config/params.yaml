@@ -17,3 +17,7 @@ MPPI:
     max_throttle: 5.0 # Maximum throttle (m/s)
     max_steer: 0.4189 # Maximum steer (rad)
     dt: 0.1 # Timestep (s)
+
+    # MPPI Parameters
+    num_trajectories: 10
+    steps_trajectories: 10

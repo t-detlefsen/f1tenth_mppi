@@ -7,11 +7,11 @@ An implementation of MPPI for the course 16-663 F1Tenth
 - ~~Finish node infrastructure~~
 - Create Occupancy Grid
 - Create Cost Map
-- Create Trajectories
+- ~~Create Trajectories~~
 - [README]
 - [LAUNCH FILE]
-- [PARAM FILE?]
-- [DEBUG STATEMENTS]
+- ~~Parameter File~~
+- ~~Debug Statements~~
 
 # Launching
 
