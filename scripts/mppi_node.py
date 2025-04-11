@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import numpy as np
+from scipy.ndimage import distance_transform_edt
 
 import rclpy
 from rclpy.node import Node
@@ -11,7 +12,8 @@ from nav_msgs.msg import OccupancyGrid
 from visualization_msgs.msg import Marker, MarkerArray
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Point, PointStamped
+import tf2_ros
 
 from f1tenth_mppi.utils import *
 from f1tenth_mppi.dynamics_models import KBM
@@ -66,6 +68,9 @@ class MPPI(Node):
         self.time_sync = ApproximateTimeSynchronizer([self.scan_sub_, self.pose_sub_], 10, 0.1)
         self.time_sync.registerCallback(self.callback)
 
+        # Setup the TF2 buffer and listener to capture transforms.
+        self.tf_buffer = tf2_ros.Buffer()
+
         self.info_log.info("MPPI node initialized")
 
     def initialize_parameters(self):
@@ -102,11 +107,22 @@ class MPPI(Node):
 
         self.info_log.info("Recieved scan_msg and pose_msg")
 
+        # Get the transformation from map frame to local egocar frame
+        try:
+            self.tf_buffer.lookup_transform("ego_racecar/base_link", "map", rclpy.time.Time(), timeout=Duration(seconds=0.1))
+        except Exception as e:
+            print(e)
+            return
+
         # TODO: Update parameters
 
         # TODO: Create Occupancy Grid
 
         # TODO: Create Cost Map
+        self.info_log.info("Creating cost map")
+        ego_position = (pose_msg.pose.pose.position.x, pose_msg.pose.pose.position.y)
+        occupancy_grid = None # TODO: Update this once create_occupancy_grid() is completed
+        cost_map = self.create_cost_map(ego_position, occupancy_grid)
 
         # Create Trajectories
         self.info_log.info("Sampling Trajectories")
@@ -136,9 +152,30 @@ class MPPI(Node):
 
         return occupancy_grid
     
+    def transform_point(self, point):
+        '''
+        Transform the point from global map frame to local egocar frame
+
+        Args:
+            point (Tuple): The point in ego frame
+        Returns:
+            point (Tuple): The point in map frame
+        '''
+        point_stamped = PointStamped()
+        point_stamped.header.frame_id = 'map'
+        point_stamped.point = Point(x=point[0], y=point[1], z=0.0)
+        try:
+            transformed_point = self.tf_buffer.transform(point_stamped, "ego_racecar/base_link")
+        except Exception as e:
+            print(f"Got Exception: {e}")
+            return
+        return [transformed_point.point.x, transformed_point.point.y]
+    
     def create_cost_map(self, ego_position: np.ndarray, occupancy_grid: np.ndarray) -> np.ndarray:
         '''
-        Create cost map based on current environment
+        Create cost map based on current environment.
+        We want areas that deviate from the raceline to have higher cost.
+        Areas that are closer to obstacles in the occupancy_grid should have higher cost.
 
         Args:
             ego_position: (ndarray): 
@@ -147,8 +184,31 @@ class MPPI(Node):
             cost_map (ndarray): The cost map
         '''
 
-        # TODO: Create cost_map
-        cost_map = None
+        # TODO: Create cost_map, should be same shape as occupancy grid
+        # OBSTACLE COST
+        obstacles = occupancy_grid > 0
+        distance_from_obstacle = distance_transform_edt(~obstacles)
+        obstacle_cost = 1.0 / (distance_from_obstacle + 1e-9)
+
+        # Compute the Raceline Deviation Cost Component
+        raceline_mask = np.zeros_like(occupancy_grid, dtype=bool)
+        # Convert raceline waypoints into egocar frame and into grid indices
+        waypoints = self.waypoints[:, :2]
+        for point in waypoints:
+            x, y = self.transform_point(self.waypoints[point])
+            # Cast to integer indices (using int() may be replaced by proper rounding or transformation)
+            x_idx = int(round(x))
+            y_idx = int(round(y))
+            # Check bounds before marking the waypoint on the mask.
+            if 0 <= x_idx < raceline_mask.shape[0] and 0 <= y_idx < raceline_mask.shape[1]:
+                raceline_mask[x_idx, y_idx] = True
+
+        # Compute the distance from raceline, for each grid cell
+        raceline_cost = distance_transform_edt(~raceline_mask)
+
+        # Final cost map is a sum of the obstacle cost and raceline cost
+        # Optionally, we can make this a weighted sum
+        cost_map = obstacle_cost + raceline_cost
 
         return cost_map
 
