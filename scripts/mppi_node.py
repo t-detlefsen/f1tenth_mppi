@@ -322,8 +322,11 @@ class MPPI(Node):
 
         # Sample control values
         v = self.u_mean[0] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("v_sigma").value
-        # omega = np.pi / 2 * np.ones((num_trajectories, steps_trajectories -1, 1))
         omega = self.u_mean[1] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("omega_sigma").value
+
+        # Limit control values
+        v = np.clip(v, self.get_parameter("min_throttle").value, self.get_parameter("min_throttle").value)
+        omega = np.clip(omega, -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
 
         actions = np.concatenate((v, omega), axis=2)
 
