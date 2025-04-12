@@ -183,21 +183,30 @@ class MPPI(Node):
         self.create_occupancy_grid(scan_msg)
         
         # # TODO: Create Cost Map
-        self.info_log.info("Creating cost map")
+        # self.info_log.info("Creating cost map")
         ego_position = (pose_msg.pose.pose.position.x, pose_msg.pose.pose.position.y)
         occupancy_grid = self.og
         self.update_cost_map(ego_position, occupancy_grid)
 
         # Create Trajectories
-        self.info_log.info("Sampling Trajectories")
+        # self.info_log.info("Sampling Trajectories")
         trajectories, actions = self.sample_trajectories(self.get_parameter("num_trajectories").value,
                                                          self.get_parameter("steps_trajectories").value)
 
         # TODO: Evaluate Trajectories
+        best_traj, best_action = self.evaluate_trajectories(trajectories, actions)
+        print(f"Steering angle is {best_action[0, 1]}")
+        print(f"Speed is {best_action[0, 0]}")
+        self.publish_trajectories(np.expand_dims(best_traj, 0), np.array([1.0, 0.0, 0.0]))
 
         # TODO: Update u_mean
+        # self.u_mean = best_action[0]
 
         # TODO: Publish AckermannDriveStamped Message
+        drive_msg = AckermannDriveStamped()
+        drive_msg.drive.steering_angle = best_action[0, 1]
+        drive_msg.drive.speed = best_action[0, 0]
+        self.drive_pub_.publish(drive_msg)
 
         return
     
@@ -313,6 +322,7 @@ class MPPI(Node):
 
         # Sample control values
         v = self.u_mean[0] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("v_sigma").value
+        # omega = np.pi / 2 * np.ones((num_trajectories, steps_trajectories -1, 1))
         omega = self.u_mean[1] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("omega_sigma").value
 
         actions = np.concatenate((v, omega), axis=2)
@@ -326,6 +336,37 @@ class MPPI(Node):
         self.publish_trajectories(trajectories)
 
         return trajectories, actions
+    
+    def evaluate_trajectories(self, trajectories: np.ndarray, actions: np.ndarray):
+        '''
+        Evaluate trajectories using the cost map
+
+        Args:
+            trajectories (np.ndarray): (num_trajectories x steps_trajectories x 3) Sampled trajectories
+            actions (np.ndarray): (num_trajectories x steps_trajectories x 2) Sampled actions
+        Returns:
+            best_traj (np.ndarray): (steps_trajectories x 3) Best trajectory
+            best_action (np.ndarray): (steps_trajectories x 2) Best action
+        '''
+
+        num_trajectories, steps_trajectories = trajectories.shape[0], trajectories.shape[1]
+        cost_map = np.array(self.cost_map.data).reshape((self.cost_map.info.height, self.cost_map.info.width))
+
+        # convert each cost map into cost map frame
+        trajectories_pixels = trajectories / self.cost_map.info.resolution
+
+        trajectories_pixels[:, :, 0] = trajectories_pixels[:, :, 0]
+        trajectories_pixels[:, :, 1] = trajectories_pixels[:, :, 1] + self.cost_map.info.height/2
+
+        # TODO: Reject trajectories that fall outside of the cost map
+        traj_scores = np.sum(cost_map[trajectories_pixels[:, :, 1].astype(int), trajectories_pixels[:, :, 0].astype(int)], axis=1)
+
+        # return lowest cost trajectory
+        min_traj_index = np.argmin(traj_scores)
+
+        # print(f"Best trajectory is {min_traj_index}")
+
+        return trajectories[min_traj_index], actions[min_traj_index]
 
     def publish_trajectories(self, points: np.ndarray, color: np.ndarray = np.array([0.0, 0.0, 1.0])):
         '''
