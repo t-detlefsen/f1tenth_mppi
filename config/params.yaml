@@ -6,6 +6,7 @@ MPPI:
     # Publisher Parameters
     drive_topic: "/drive"
     occupancy_topic: "/occupancy"
+    cost_map_topic: "/cost_map"
     marker_topic: "/trajectory"
 
     # Subscriber Parameters

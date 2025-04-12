@@ -14,6 +14,8 @@ from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Point, PointStamped
 import tf2_ros
+from rclpy.duration import Duration
+import tf2_geometry_msgs
 
 from f1tenth_mppi.utils import *
 from f1tenth_mppi.dynamics_models import KBM
@@ -54,9 +56,12 @@ class MPPI(Node):
         self.drive_pub_ = self.create_publisher(AckermannDriveStamped,
                                                 self.get_parameter("drive_topic").value,
                                                 10)
-        # self.occupancy_pub_ = self.create_publisher(OccupancyGrid,
-        #                                         self.get_parameter("occupancy_topic").value,
-        #                                         10)
+        self.occupancy_pub_ = self.create_publisher(OccupancyGrid,
+                                                self.get_parameter("occupancy_topic").value,
+                                                10)
+        self.cost_map_pub_ = self.create_publisher(OccupancyGrid,
+                                                self.get_parameter("cost_map_topic").value,
+                                                10)
         self.marker_pub_ = self.create_publisher(MarkerArray,
                                                 self.get_parameter("marker_topic").value,
                                                 10)
@@ -82,8 +87,20 @@ class MPPI(Node):
         self.temp_time = 0
         self.oc_pub_ = self.create_publisher(OccupancyGrid, "ego_occupancy", 10) # and other publishers that you might need
                 
-        # # Setup the TF2 buffer and listener to capture transforms.
-        # self.tf_buffer = tf2_ros.Buffer()
+        # Setup the TF2 buffer and listener to capture transforms.
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        # Set up the cost map
+        self.cost_map = OccupancyGrid()
+        self.cost_map.header.frame_id = "ego_racecar/base_link"
+        self.cost_map.info.resolution = 0.03 # this means that every pixel represents 3 cm
+        self.cost_map.info.width = 100 
+        self.cost_map.info.height = 100 
+        self.cost_map.data = np.zeros((self.cost_map.info.height, self.cost_map.info.width), dtype=np.int8).flatten().tolist()
+        self.cost_map.info.origin.position.x = 0.0
+        self.cost_map.info.origin.position.y = -1.5 # Set origin to the center of the grid
+        self.cost_map.info.origin.position.z = 0.0  
 
         self.info_log.info("MPPI node initialized")
 
@@ -97,6 +114,7 @@ class MPPI(Node):
                 ('visualize', None),
                 ('drive_topic', None),
                 ('occupancy_topic', None),
+                ('cost_map_topic', None),
                 ('marker_topic', None),
                 ('pose_topic', None),
                 ('scan_topic', None),
@@ -109,6 +127,25 @@ class MPPI(Node):
                 ('num_trajectories', None),
                 ('steps_trajectories', None),
             ])
+        
+    def transform_point(self, point):
+        '''
+        Transform the point from global map frame to local egocar frame
+
+        Args:
+            point (Tuple): The point in ego frame
+        Returns:
+            point (Tuple): The point in map frame
+        '''
+        point_stamped = PointStamped()
+        point_stamped.header.frame_id = 'map'
+        point_stamped.point = Point(x=point[0], y=point[1], z=0.0)
+        try:
+            transformed_point = self.tf_buffer.transform(point_stamped, "ego_racecar/base_link")
+        except Exception as e:
+            print(f"Got Exception: {e}")
+            return
+        return [transformed_point.point.x, transformed_point.point.y]
 
     def callback(self, scan_msg: LaserScan, pose_msg: Odometry):
         '''
@@ -122,11 +159,12 @@ class MPPI(Node):
         self.info_log.info("Recieved scan_msg and pose_msg")
 
         # Get the transformation from map frame to local egocar frame
-        # try:
-        #     self.tf_buffer.lookup_transform("ego_racecar/base_link", "map", rclpy.time.Time(), timeout=Duration(seconds=0.1))
-        # except Exception as e:
-        #     print(e)
-        #     return
+        try:
+            self.tf_buffer.lookup_transform("ego_racecar/base_link", "map", rclpy.time.Time(), timeout=Duration(seconds=0.1))
+        except Exception as e:
+            print(f"not working here")
+            print(e)
+            return
 
         # TODO: Update parameters
 
@@ -167,10 +205,10 @@ class MPPI(Node):
         self.oc_pub_.publish(self.og)
         
         # TODO: Create Cost Map
-        # self.info_log.info("Creating cost map")
-        # ego_position = (pose_msg.pose.pose.position.x, pose_msg.pose.pose.position.y)
-        # occupancy_grid = None # TODO: Update this once create_occupancy_grid() is completed
-        # cost_map = self.create_cost_map(ego_position, occupancy_grid)
+        self.info_log.info("Creating cost map")
+        ego_position = (pose_msg.pose.pose.position.x, pose_msg.pose.pose.position.y)
+        occupancy_grid = None # TODO: Update this once create_occupancy_grid() is completed
+        self.update_cost_map(ego_position, occupancy_grid)
 
         # Create Trajectories
         self.info_log.info("Sampling Trajectories")
@@ -200,28 +238,9 @@ class MPPI(Node):
 
         return occupancy_grid
     
-    # def transform_point(self, point):
-    #     '''
-    #     Transform the point from global map frame to local egocar frame
-
-    #     Args:
-    #         point (Tuple): The point in ego frame
-    #     Returns:
-    #         point (Tuple): The point in map frame
-    #     '''
-    #     point_stamped = PointStamped()
-    #     point_stamped.header.frame_id = 'map'
-    #     point_stamped.point = Point(x=point[0], y=point[1], z=0.0)
-    #     try:
-    #         transformed_point = self.tf_buffer.transform(point_stamped, "ego_racecar/base_link")
-    #     except Exception as e:
-    #         print(f"Got Exception: {e}")
-    #         return
-    #     return [transformed_point.point.x, transformed_point.point.y]
-    
-    def create_cost_map(self, ego_position: np.ndarray, occupancy_grid: np.ndarray) -> np.ndarray:
+    def update_cost_map(self, ego_position: np.ndarray, occupancy_grid: np.ndarray) -> np.ndarray:
         '''
-        Create cost map based on current environment.
+        Update cost map based on current environment.
         We want areas that deviate from the raceline to have higher cost.
         Areas that are closer to obstacles in the occupancy_grid should have higher cost.
 
@@ -234,32 +253,43 @@ class MPPI(Node):
 
         # TODO: Create cost_map, should be same shape as occupancy grid
         # OBSTACLE COST
-        cost_map = None
-        # obstacles = occupancy_grid > 0
-        # distance_from_obstacle = distance_transform_edt(~obstacles)
-        # obstacle_cost = 1.0 / (distance_from_obstacle + 1e-9)
+        # occupancy_data = np.array(occupancy_grid.data).reshape((occupancy_grid.info.height, occupancy_grid.info.width))
+        occupancy_data = np.zeros((100, 100))
+        obstacles = occupancy_data > 0
+        distance_from_obstacle = distance_transform_edt(~obstacles)
+        obstacle_cost = 1.0 / (distance_from_obstacle + 1e-9)
 
-        # # Compute the Raceline Deviation Cost Component
-        # raceline_mask = np.zeros_like(occupancy_grid, dtype=bool)
-        # # Convert raceline waypoints into egocar frame and into grid indices
-        # waypoints = self.waypoints[:, :2]
-        # for point in waypoints:
-        #     x, y = self.transform_point(self.waypoints[point])
-        #     # Cast to integer indices (using int() may be replaced by proper rounding or transformation)
-        #     x_idx = int(round(x))
-        #     y_idx = int(round(y))
-        #     # Check bounds before marking the waypoint on the mask.
-        #     if 0 <= x_idx < raceline_mask.shape[0] and 0 <= y_idx < raceline_mask.shape[1]:
-        #         raceline_mask[x_idx, y_idx] = True
+        # Compute the Raceline Deviation Cost Component
+        raceline_mask = np.zeros_like(occupancy_data, dtype=bool)
+        # Convert raceline waypoints into egocar frame and into grid indices
+        waypoints = self.waypoints[:, :2]
+        for point in waypoints:
+            # print(f"waypoint is {point}")
+            new_point = self.transform_point(point)
+            # print(f"new point is {new_point}")
+            # Cast to integer indices (using int() may be replaced by proper rounding or transformation)
+            x_idx = int(round(new_point[0]))
+            y_idx = int(round(new_point[1]))
+            # Check bounds before marking the waypoint on the mask.
+            if 0 <= x_idx < raceline_mask.shape[0] and 0 <= y_idx < raceline_mask.shape[1]:
+                raceline_mask[x_idx, y_idx] = True
 
-        # # Compute the distance from raceline, for each grid cell
-        # raceline_cost = distance_transform_edt(~raceline_mask)
+        # Compute the distance from raceline, for each grid cell
+        raceline_cost = distance_transform_edt(~raceline_mask)
 
-        # # Final cost map is a sum of the obstacle cost and raceline cost
-        # # Optionally, we can make this a weighted sum
-        # cost_map = obstacle_cost + raceline_cost
+        # Final cost map is a sum of the obstacle cost and raceline cost
+        # Optionally, we can make this a weighted sum
+        cost_map = obstacle_cost + raceline_cost
+        cost_map = np.rint(cost_map)
+        cost_map = np.clip(cost_map, 0, 100).astype(int)
+        
+        # print(f"Cost map is shape {cost_map.shape}")
+        # print(f"Cost map data is {cost_map.flatten().tolist()}")
+        
+        self.cost_map.data = cost_map.flatten().tolist() 
+        
+        self.cost_map_pub_.publish(self.cost_map)
 
-        return cost_map
 
     def sample_trajectories(self, num_trajectories: int, steps_trajectories: int):
         '''
