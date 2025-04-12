@@ -23,3 +23,8 @@ MPPI:
     # MPPI Parameters
     num_trajectories: 10
     steps_trajectories: 10
+
+    # Cost Map Parameters
+    dist_cost_mult: 10
+    obstacle_weight: 0.5
+    raceline_weight: 0.5

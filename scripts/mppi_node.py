@@ -84,9 +84,6 @@ class MPPI(Node):
         self.og.info.origin.position.x = 0.0
         self.og.info.origin.position.y = -(self.og.info.height * self.og.info.resolution) / 2
 
-        self.temp_time = 0
-        self.oc_pub_ = self.create_publisher(OccupancyGrid, "ego_occupancy", 10) # and other publishers that you might need
-                
         # Setup the TF2 buffer and listener to capture transforms.
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -101,6 +98,10 @@ class MPPI(Node):
         self.cost_map.info.origin.position.x = 0.0
         self.cost_map.info.origin.position.y = -1.5 # Set origin to the center of the grid
         self.cost_map.info.origin.position.z = 0.0  
+
+        self.dist_cost_mult = self.get_parameter("dist_cost_mult").value
+        self.obstacle_weight = self.get_parameter("obstacle_weight").value
+        self.raceline_weight = self.get_parameter("raceline_weight").value
 
         self.info_log.info("MPPI node initialized")
 
@@ -126,6 +127,9 @@ class MPPI(Node):
                 ('dt', None),
                 ('num_trajectories', None),
                 ('steps_trajectories', None),
+                ('dist_cost_mult', None),
+                ('obstacle_weight', None),
+                ('raceline_weight', None),
             ])
         
     def transform_point(self, point):
@@ -158,6 +162,10 @@ class MPPI(Node):
 
         self.info_log.info("Recieved scan_msg and pose_msg")
 
+        # Visualize optimal waypoints
+        waypoints_markers = visualize_waypoints(self.waypoints, self.get_clock().now().to_msg(), color=(1.0, 0.0, 0.0), scale=0.1)
+        self.marker_pub_.publish(waypoints_markers)
+
         # Get the transformation from map frame to local egocar frame
         try:
             self.tf_buffer.lookup_transform("ego_racecar/base_link", "map", rclpy.time.Time(), timeout=Duration(seconds=0.1))
@@ -169,6 +177,35 @@ class MPPI(Node):
         # TODO: Update parameters
 
         # TODO: Create Occupancy Grid
+        self.create_occupancy_grid(scan_msg)
+        
+        # # TODO: Create Cost Map
+        self.info_log.info("Creating cost map")
+        ego_position = (pose_msg.pose.pose.position.x, pose_msg.pose.pose.position.y)
+        occupancy_grid = self.og
+        self.update_cost_map(ego_position, occupancy_grid)
+
+        # Create Trajectories
+        self.info_log.info("Sampling Trajectories")
+        trajectories, actions = self.sample_trajectories(self.get_parameter("num_trajectories").value,
+                                                         self.get_parameter("steps_trajectories").value)
+
+        # TODO: Evaluate Trajectories
+
+        # TODO: Publish AckermannDriveStamped Message
+
+        return
+    
+    def create_occupancy_grid(self, scan_msg: LaserScan) -> np.ndarray:
+        '''
+        Process the LaserScan data into an occupancy grid
+
+        Args:
+            scan_msg (LaserScan): LaserScan data from the LiDAR
+        Returns:
+            occupancy_grid (ndarray): The processed occupancy grid
+        '''
+
          # Initialize an empty occupancy grid (2D array)
         grid = np.zeros((self.og.info.width, self.og.info.width), dtype=int)
 
@@ -202,41 +239,7 @@ class MPPI(Node):
         # Prepare and publish the updated occupancy grid
         self.og.data = grid.flatten().tolist()
         self.og.header.stamp = self.get_clock().now().to_msg()
-        self.oc_pub_.publish(self.og)
-        
-        # TODO: Create Cost Map
-        self.info_log.info("Creating cost map")
-        ego_position = (pose_msg.pose.pose.position.x, pose_msg.pose.pose.position.y)
-        occupancy_grid = None # TODO: Update this once create_occupancy_grid() is completed
-        self.update_cost_map(ego_position, occupancy_grid)
-
-        # Create Trajectories
-        self.info_log.info("Sampling Trajectories")
-        trajectories, actions = self.sample_trajectories(self.get_parameter("num_trajectories").value,
-                                                         self.get_parameter("steps_trajectories").value)
-
-        # TODO: Evaluate Trajectories
-
-        # TODO: Publish AckermannDriveStamped Message
-
-        return
-    
-    def create_occupancy_grid(self, scan_msg: LaserScan) -> np.ndarray:
-        '''
-        Process the LaserScan data into an occupancy grid
-
-        Args:
-            scan_msg (LaserScan): LaserScan data from the LiDAR
-        Returns:
-            occupancy_grid (ndarray): The processed occupancy grid
-        '''
-
-        # TODO: Process + Filter scan_msg into output
-        occupancy_grid = None
-
-        # TODO: Pubish OccupancyGrid Message
-
-        return occupancy_grid
+        self.occupancy_pub_.publish(self.og)
     
     def update_cost_map(self, ego_position: np.ndarray, occupancy_grid: np.ndarray) -> np.ndarray:
         '''
@@ -253,38 +256,38 @@ class MPPI(Node):
 
         # TODO: Create cost_map, should be same shape as occupancy grid
         # OBSTACLE COST
-        # occupancy_data = np.array(occupancy_grid.data).reshape((occupancy_grid.info.height, occupancy_grid.info.width))
-        occupancy_data = np.zeros((100, 100))
-        obstacles = occupancy_data > 0
-        distance_from_obstacle = distance_transform_edt(~obstacles)
-        obstacle_cost = 1.0 / (distance_from_obstacle + 1e-9)
+        occupancy_data = np.array(occupancy_grid.data).reshape((occupancy_grid.info.height, occupancy_grid.info.width))
+        obstacle_cost = occupancy_data
 
         # Compute the Raceline Deviation Cost Component
-        raceline_mask = np.zeros_like(occupancy_data, dtype=bool)
+        raceline_mask = np.zeros_like(occupancy_data, dtype=int)
         # Convert raceline waypoints into egocar frame and into grid indices
         waypoints = self.waypoints[:, :2]
         for point in waypoints:
-            # print(f"waypoint is {point}")
-            new_point = self.transform_point(point)
-            # print(f"new point is {new_point}")
+            ego_x, ego_y = self.transform_point(point)
+            ego_x = (ego_x / occupancy_grid.info.resolution) - occupancy_grid.info.origin.position.x
+            ego_y = (ego_y / occupancy_grid.info.resolution) - occupancy_grid.info.origin.position.y + occupancy_grid.info.height/2
             # Cast to integer indices (using int() may be replaced by proper rounding or transformation)
-            x_idx = int(round(new_point[0]))
-            y_idx = int(round(new_point[1]))
+            x_idx = int(round(ego_x))
+            y_idx = int(round(ego_y))
             # Check bounds before marking the waypoint on the mask.
             if 0 <= x_idx < raceline_mask.shape[0] and 0 <= y_idx < raceline_mask.shape[1]:
-                raceline_mask[x_idx, y_idx] = True
+                raceline_mask[y_idx, x_idx] = 100
+        # Define a simple structuring element (kernel) for dilation
+        dilation_kernel = np.array([[0, 1, 0],
+                                    [1, 1, 1],
+                                    [0, 1, 0]], dtype=bool)
+
+        # Apply binary dilation to expand obstacles
+        raceline_mask = ndimage.binary_dilation(raceline_mask, structure=dilation_kernel).astype(int) * 100
 
         # Compute the distance from raceline, for each grid cell
-        raceline_cost = distance_transform_edt(~raceline_mask)
+        raceline_cost = self.dist_cost_mult * distance_transform_edt(raceline_mask == 0)
 
-        # Final cost map is a sum of the obstacle cost and raceline cost
-        # Optionally, we can make this a weighted sum
-        cost_map = obstacle_cost + raceline_cost
+        # Final cost map is a weighted sum of the obstacle cost and raceline cost
+        cost_map = self.obstacle_weight * obstacle_cost + self.raceline_weight * raceline_cost
         cost_map = np.rint(cost_map)
         cost_map = np.clip(cost_map, 0, 100).astype(int)
-        
-        # print(f"Cost map is shape {cost_map.shape}")
-        # print(f"Cost map data is {cost_map.flatten().tolist()}")
         
         self.cost_map.data = cost_map.flatten().tolist() 
         
