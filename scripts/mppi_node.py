@@ -21,6 +21,8 @@ from f1tenth_mppi.utils import *
 from f1tenth_mppi.dynamics_models import KBM
 from scipy import ndimage
 
+import time
+
 class MPPI(Node):
     def __init__(self):
         super().__init__('MPPI')
@@ -135,25 +137,6 @@ class MPPI(Node):
                 ('raceline_weight', None),
             ])
         
-    def transform_point(self, point):
-        '''
-        Transform the point from global map frame to local egocar frame
-
-        Args:
-            point (Tuple): The point in ego frame
-        Returns:
-            point (Tuple): The point in map frame
-        '''
-        point_stamped = PointStamped()
-        point_stamped.header.frame_id = 'map'
-        point_stamped.point = Point(x=point[0], y=point[1], z=0.0)
-        try:
-            transformed_point = self.tf_buffer.transform(point_stamped, "ego_racecar/base_link")
-        except Exception as e:
-            print(f"Got Exception: {e}")
-            return
-        return [transformed_point.point.x, transformed_point.point.y]
-
     def callback(self, scan_msg: LaserScan, pose_msg: Odometry):
         '''
         Time synchronized callback to handle LaserScan and Odometry messages
@@ -166,8 +149,9 @@ class MPPI(Node):
         self.info_log.info("Recieved scan_msg and pose_msg")
 
         # Visualize optimal waypoints
-        waypoints_markers = visualize_waypoints(self.waypoints, self.get_clock().now().to_msg(), color=(1.0, 0.0, 0.0), scale=0.1)
-        self.marker_pub_.publish(waypoints_markers)
+        if self.get_parameter("visualize").value:
+            waypoints_markers = visualize_waypoints(self.waypoints, self.get_clock().now().to_msg(), color=(1.0, 0.0, 0.0), scale=0.1)
+            self.marker_pub_.publish(waypoints_markers)
 
         # Get the transformation from map frame to local egocar frame
         try:
@@ -183,20 +167,18 @@ class MPPI(Node):
         self.create_occupancy_grid(scan_msg)
         
         # # TODO: Create Cost Map
-        # self.info_log.info("Creating cost map")
+        self.info_log.info("Creating cost map")
         ego_position = (pose_msg.pose.pose.position.x, pose_msg.pose.pose.position.y)
         occupancy_grid = self.og
         self.update_cost_map(ego_position, occupancy_grid)
 
         # Create Trajectories
-        # self.info_log.info("Sampling Trajectories")
+        self.info_log.info("Sampling Trajectories")
         trajectories, actions = self.sample_trajectories(self.get_parameter("num_trajectories").value,
                                                          self.get_parameter("steps_trajectories").value)
 
         # TODO: Evaluate Trajectories
         best_traj, best_action = self.evaluate_trajectories(trajectories, actions)
-        print(f"Steering angle is {best_action[0, 1]}")
-        print(f"Speed is {best_action[0, 0]}")
         self.publish_trajectories(np.expand_dims(best_traj, 0), np.array([1.0, 0.0, 0.0]))
 
         # TODO: Update u_mean
@@ -249,10 +231,15 @@ class MPPI(Node):
 
         # Apply binary dilation to expand obstacles
         grid = ndimage.binary_dilation(grid, structure=dilation_kernel).astype(int) * 100
+        grid = ndimage.binary_dilation(grid, structure=dilation_kernel).astype(int) * 100
 
         # Prepare and publish the updated occupancy grid
         self.og.data = grid.flatten().tolist()
         self.og.header.stamp = self.get_clock().now().to_msg()
+
+        if not self.get_parameter("visualize").value:
+            return
+        
         self.occupancy_pub_.publish(self.og)
     
     def update_cost_map(self, ego_position: np.ndarray, occupancy_grid: np.ndarray) -> np.ndarray:
@@ -273,21 +260,35 @@ class MPPI(Node):
         occupancy_data = np.array(occupancy_grid.data).reshape((occupancy_grid.info.height, occupancy_grid.info.width))
         obstacle_cost = occupancy_data
 
-        # Compute the Raceline Deviation Cost Component
         raceline_mask = np.zeros_like(occupancy_data, dtype=int)
-        # Convert raceline waypoints into egocar frame and into grid indices
-        waypoints = self.waypoints[:, :2]
-        for point in waypoints:
-            ego_x, ego_y = self.transform_point(point)
-            ego_x = (ego_x / occupancy_grid.info.resolution) - occupancy_grid.info.origin.position.x
-            ego_y = (ego_y / occupancy_grid.info.resolution) - occupancy_grid.info.origin.position.y + occupancy_grid.info.height/2
-            # Cast to integer indices (using int() may be replaced by proper rounding or transformation)
-            x_idx = int(round(ego_x))
-            y_idx = int(round(ego_y))
-            # Check bounds before marking the waypoint on the mask.
-            if 0 <= x_idx < raceline_mask.shape[0] and 0 <= y_idx < raceline_mask.shape[1]:
-                raceline_mask[y_idx, x_idx] = 100
-        # Define a simple structuring element (kernel) for dilation
+        waypoints = self.waypoints[:, :2]  # shape: (N, 2)
+        transform = self.tf_buffer.lookup_transform("ego_racecar/base_link", "map", rclpy.time.Time(), timeout=Duration(seconds=0.1))
+
+        # 4. Extract translation and rotation (quaternion) from the transform
+        trans_x = transform.transform.translation.x
+        trans_y = transform.transform.translation.y
+        qx = transform.transform.rotation.x
+        qy = transform.transform.rotation.y
+        qz = transform.transform.rotation.z
+        qw = transform.transform.rotation.w 
+        yaw = np.arctan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy**2 + qz**2))
+        R = np.array([[np.cos(yaw), -np.sin(yaw)],
+                    [np.sin(yaw),  np.cos(yaw)]])
+
+        # Transform all waypoints from 'map' frame to egocar frame:
+        points_transformed = np.dot(waypoints, R.T) + np.array([trans_x, trans_y])
+
+        # Convert the transformed points into grid indices.
+        ego_x = (points_transformed[:, 0] / self.cost_map.info.resolution)
+        ego_y = (points_transformed[:, 1] / self.cost_map.info.resolution) + self.cost_map.info.height / 2
+
+        x_idx = np.round(ego_x).astype(int)
+        y_idx = np.round(ego_y).astype(int)
+
+        mask_shape = raceline_mask.shape
+        valid = (x_idx >= 0) & (x_idx < mask_shape[0]) & (y_idx >= 0) & (y_idx < mask_shape[1])
+        raceline_mask[y_idx[valid], x_idx[valid]] = 100
+
         dilation_kernel = np.array([[0, 1, 0],
                                     [1, 1, 1],
                                     [0, 1, 0]], dtype=bool)
@@ -304,6 +305,9 @@ class MPPI(Node):
         cost_map = np.clip(cost_map, 0, 100).astype(int)
         
         self.cost_map.data = cost_map.flatten().tolist() 
+
+        if not self.get_parameter("visualize").value:
+            return
         
         self.cost_map_pub_.publish(self.cost_map)
 
@@ -325,7 +329,7 @@ class MPPI(Node):
         omega = self.u_mean[1] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("omega_sigma").value
 
         # Limit control values
-        v = np.clip(v, self.get_parameter("min_throttle").value, self.get_parameter("min_throttle").value)
+        v = np.clip(v, self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
         omega = np.clip(omega, -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
 
         actions = np.concatenate((v, omega), axis=2)
@@ -333,7 +337,7 @@ class MPPI(Node):
         # Sample trajectories
         trajectories = np.zeros((num_trajectories, steps_trajectories, 3))
         for i in range(steps_trajectories - 1):
-            trajectories[:, i + 1] = self.model.predict(trajectories[:, i], actions[:, i])
+            trajectories[:, i + 1] = self.model.predict_euler(trajectories[:, i], actions[:, i])
 
         # Publish a subset of trajectories
         self.publish_trajectories(trajectories)

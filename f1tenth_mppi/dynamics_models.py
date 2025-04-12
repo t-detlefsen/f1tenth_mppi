@@ -21,6 +21,21 @@ class dynamics_model_base(abc.ABC):
         return
     
     @classmethod
+    def predict_euler(self, state: np.ndarray, action: np.ndarray) -> np.ndarray:
+        '''
+        Euler Prediction of updated state
+        
+        Args:
+            state (ndarray): the current state of the vehicle
+            action (ndarray): the action given
+        Returns:
+            new_state (ndarray): the predicted state
+        '''
+
+        new_state = state + self.dynamics(self, state, action) * self.dt
+        return new_state
+    
+    @classmethod    
     def predict(self, state: np.ndarray, action: np.ndarray) -> np.ndarray:
         '''
         RK4 Prediction of updated state
