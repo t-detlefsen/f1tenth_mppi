@@ -27,6 +27,7 @@ class MPPI(Node):
 
         # Initialize Parameters
         self.initialize_parameters()
+        self.u_mean = np.array([self.get_parameter("min_throttle").value, 0.0]) # Mean for sampling trajectories
         
         if self.get_parameter("drive_topic").value == None:
             self.error_log.error("No parameters set, use --ros-args --params-file <FILE>")
@@ -89,6 +90,8 @@ class MPPI(Node):
                 ('dt', None),
                 ('num_trajectories', None),
                 ('steps_trajectories', None),
+                ('v_sigma', None),
+                ('omega_sigma', None),
             ])
 
     def callback(self, scan_msg: LaserScan, pose_msg: Odometry):
@@ -114,6 +117,8 @@ class MPPI(Node):
                                                          self.get_parameter("steps_trajectories").value)
 
         # TODO: Evaluate Trajectories
+
+        # TODO: Update u_mean
 
         # TODO: Publish AckermannDriveStamped Message
 
@@ -164,9 +169,9 @@ class MPPI(Node):
             actions (ndarray): (num_trajectories x steps_trajectories - 1) array of actions
         '''
 
-        # TODO: Figure out smarter way of sampling trajectories
-        v = self.get_parameter("min_throttle").value + self.get_parameter("max_throttle").value * np.random.rand(num_trajectories, steps_trajectories - 1, 1)
-        omega = self.get_parameter("max_steer").value * (2 * np.random.rand(num_trajectories, steps_trajectories - 1, 1) - 1)
+        # Sample control values
+        v = self.u_mean[0] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("v_sigma").value
+        omega = self.u_mean[1] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("omega_sigma").value
 
         actions = np.concatenate((v, omega), axis=2)
 
