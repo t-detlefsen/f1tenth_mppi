@@ -2,6 +2,7 @@ MPPI:
   ros__parameters:
     visualize: False
     waypoint_path: "waypoints.csv"
+    vehicle_frame: "ego_racecar/base_link"
 
     # Publisher Parameters
     drive_topic: "/drive"
@@ -27,6 +28,8 @@ MPPI:
     omega_sigma: 0.25
 
     # Cost Map Parameters
+    cost_map_width: 100
+    cost_map_res: 0.03
     dist_cost_mult: 17
     obstacle_weight: 0.5
     raceline_weight: 0.5
