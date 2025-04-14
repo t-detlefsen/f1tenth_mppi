@@ -35,3 +35,4 @@ MPPI:
     raceline_weight: 0.2
     obstacle_dilation: 15
     raceline_dilation: 3
+    heading_weight: 1.0

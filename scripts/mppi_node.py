@@ -128,6 +128,7 @@ class MPPI(Node):
                 ('raceline_weight', None),
                 ('obstacle_dilation', None),
                 ('raceline_dilation', None),
+                ('heading_weight', None),
             ])
         
     def callback(self, scan_msg: LaserScan, pose_msg: Odometry):
@@ -343,6 +344,26 @@ class MPPI(Node):
 
         # Evaluate trajectories and determine the lowest cost
         traj_scores = np.sum(cost_map[trajectories_pixels[:, :, 1].astype(int), trajectories_pixels[:, :, 0].astype(int)], axis=1)
+
+        # now we will compare trajectory headings with waypoint headings
+        # Extract trajectory positions
+        traj_xy = trajectories[:, :, :2] # shape (N, T, 2)
+        # Want shape (N, T, 1, 2) - (1, 1, W, 2) to become (N, T, W, 2)
+        diff = traj_xy[:, :, np.newaxis, :] - self.waypoints[np.newaxis, np.newaxis, :, :2]
+        dists = np.linalg.norm(diff, axis=-1) 
+
+        # Find the index of the closest waypoint at each step
+        closest_wp_indices = np.argmin(dists, axis=-1) # shape is (N,T)
+        desired_headings = np.take(self.waypoints[:, 2], closest_wp_indices) # use vectorized indexing
+        # Extract the predicted headings
+        traj_headings = trajectories[:, :, 2]  # Shape: (N, T)
+        # Compute wrapped angular difference for each step.
+        heading_errors = np.abs((traj_headings - desired_headings + np.pi) % (2 * np.pi) - np.pi)
+
+        # Compute the per-trajectory heading cost by summing over all T steps.
+        heading_cost_per_traj = np.sum(heading_errors * self.get_parameter("heading_weight").value, axis=1)
+        traj_scores += heading_cost_per_traj.astype(int)
+
         min_cost_idx = np.argmin(traj_scores)
 
         # Publish a lowest cost trajectory
