@@ -1,11 +1,14 @@
 #!/usr/bin/python3
 
+import copy
 import numpy as np
-from scipy.ndimage import distance_transform_edt
+from scipy.ndimage import distance_transform_edt, binary_dilation
 
 import rclpy
+import tf2_ros
 from rclpy.node import Node
 from message_filters import Subscriber, ApproximateTimeSynchronizer
+from rclpy.duration import Duration
 
 from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import OccupancyGrid
@@ -13,15 +16,9 @@ from visualization_msgs.msg import Marker, MarkerArray
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Point
-import tf2_ros
-from rclpy.duration import Duration
 
 from f1tenth_mppi.utils import *
 from f1tenth_mppi.dynamics_models import KBM
-from scipy import ndimage
-
-import time
-import copy
 
 class MPPI(Node):
     def __init__(self):
@@ -129,6 +126,8 @@ class MPPI(Node):
                 ('dist_cost_mult', None),
                 ('obstacle_weight', None),
                 ('raceline_weight', None),
+                ('obstacle_dilation', None),
+                ('raceline_dilation', None),
             ])
         
     def callback(self, scan_msg: LaserScan, pose_msg: Odometry):
@@ -148,20 +147,26 @@ class MPPI(Node):
         
         # Create Cost Map
         self.info_log.info("Creating cost map")
-        cost_map = self.update_cost_map(occupancy_grid)
+        try:
+            cost_map = self.update_cost_map(occupancy_grid)
+        except Exception as e:
+            self.warn_log.warn("Error updating cost map, skipping iteration")
+            return
 
         # Create Trajectories
-        self.info_log.info("Sampling Trajectories")
+        self.info_log.info("Sampling trajectories")
         trajectories, actions = self.sample_trajectories(self.get_parameter("num_trajectories").value,
                                                          self.get_parameter("steps_trajectories").value)
 
         # Evaluate Trajectories
+        self.info_log.info("Evaluating trajectories")
         min_cost_idx = self.evaluate_trajectories(cost_map, trajectories)
 
-        # # Update u_mean
-        # self.u_mean = best_action[0]
+        # Update u_mean
+        self.u_mean = actions[min_cost_idx, 0]
 
         # Publish AckermannDriveStamped Message
+        self.info_log.info("Publishing drive command")
         drive_msg = AckermannDriveStamped()
         drive_msg.drive.steering_angle = actions[min_cost_idx, 0, 1]
         drive_msg.drive.speed = actions[min_cost_idx, 0, 0]
@@ -198,12 +203,13 @@ class MPPI(Node):
         occupancy_grid[x_coords, y_coords] = 100
 
         # Define a simple structuring element (kernel) for dilation
-        dilation_kernel = np.array([[0, 1, 0],
-                                    [1, 1, 1],
-                                    [0, 1, 0]], dtype=bool)
+        # dilation_kernel = np.array([[0, 1, 0],
+        #                             [1, 1, 1],
+        #                             [0, 1, 0]], dtype=bool)
 
         # Apply binary dilation to expand obstacles
-        occupancy_grid = ndimage.binary_dilation(occupancy_grid, structure=dilation_kernel).astype(int) * 100
+        dilation_kernel = np.ones((self.get_parameter("obstacle_dilation").value, self.get_parameter("obstacle_dilation").value), dtype=bool)
+        occupancy_grid = binary_dilation(occupancy_grid, structure=dilation_kernel).astype(int) * 100
 
         # Prepare and publish the updated occupancy grid
         if self.get_parameter("visualize").value:
@@ -255,10 +261,11 @@ class MPPI(Node):
         raceline_mask[y_idx[valid], x_idx[valid]] = 100
 
         # Apply binary dilation to expand raceline
-        dilation_kernel = np.array([[0, 1, 0],
-                                    [1, 1, 1],
-                                    [0, 1, 0]], dtype=bool)
-        raceline_mask = ndimage.binary_dilation(raceline_mask, structure=dilation_kernel).astype(int) * 100
+        # dilation_kernel = np.array([[0, 1, 0],
+        #                             [1, 1, 1],
+        #                             [0, 1, 0]], dtype=bool)
+        dilation_kernel = np.ones((self.get_parameter("raceline_dilation").value, self.get_parameter("raceline_dilation").value), dtype=bool)
+        raceline_mask = binary_dilation(raceline_mask, structure=dilation_kernel).astype(int) * 100
 
         # Compute the distance from raceline, for each grid cell
         raceline_cost = self.get_parameter("dist_cost_mult").value * distance_transform_edt(raceline_mask == 0)
@@ -287,8 +294,14 @@ class MPPI(Node):
         '''
 
         # Sample control values
-        v = self.u_mean[0] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("v_sigma").value
-        omega = self.u_mean[1] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("omega_sigma").value
+        # v = self.u_mean[0] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("v_sigma").value
+        # omega = self.u_mean[1] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("omega_sigma").value
+
+        v = (self.u_mean[0] + np.random.randn(num_trajectories, 1, 1) * self.get_parameter("v_sigma").value)
+        omega = (self.u_mean[1] + np.random.randn(num_trajectories, 1, 1) * self.get_parameter("omega_sigma").value)
+
+        v = np.repeat(v, steps_trajectories - 1, axis=1)
+        omega = np.repeat(omega, steps_trajectories - 1, axis=1)
 
         # Limit control values
         v = np.clip(v, self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
@@ -302,7 +315,7 @@ class MPPI(Node):
             trajectories[:, i + 1] = self.model.predict_euler(trajectories[:, i], actions[:, i])
 
         # Publish a subset of trajectories
-        self.publish_trajectories(trajectories)
+        self.publish_trajectories(trajectories[:5])
 
         return trajectories, actions
     
@@ -322,7 +335,8 @@ class MPPI(Node):
         trajectories_pixels[:, :, 0] = trajectories_pixels[:, :, 0]
         trajectories_pixels[:, :, 1] = trajectories_pixels[:, :, 1] + self.cost_map.info.height/2
 
-        # TODO: Reject trajectories that fall outside of the cost map
+        # Handle trajectories that fall outside of the cost map
+        trajectories_pixels = np.clip(trajectories_pixels[:, :, :2], 0, self.cost_map.info.width - 1)
 
         # Evaluate trajectories and determine the lowest cost
         traj_scores = np.sum(cost_map[trajectories_pixels[:, :, 1].astype(int), trajectories_pixels[:, :, 0].astype(int)], axis=1)
@@ -391,7 +405,7 @@ class MPPI(Node):
         for i in range(len(points)):
             marker = Marker()
             marker.ns = ns
-            marker.header.frame_id = "ego_racecar/laser"
+            marker.header.frame_id = "map"
             marker.id = i + 1
             marker.header.stamp = self.get_clock().now().to_msg()
             marker.type = Marker.SPHERE
