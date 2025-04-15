@@ -162,8 +162,8 @@ class MPPI(Node):
         self.info_log.info("Evaluating trajectories")
         min_cost_idx = self.evaluate_trajectories(cost_map, trajectories)
 
-        # Update u_mean
-        self.u_mean = actions[min_cost_idx, 0]
+        # # Update u_mean
+        # self.u_mean = actions[min_cost_idx, 0]
 
         # Publish AckermannDriveStamped Message
         self.info_log.info("Publishing drive command")
