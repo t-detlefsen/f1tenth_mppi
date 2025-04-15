@@ -16,8 +16,8 @@ MPPI:
 
     # Model Parameters
     wheelbase: 0.33 # Wheelbase (m)
-    min_throttle: 1.3 # Minimum throttle (m/s)
-    max_throttle: 2.5 # Maximum throttle (m/s)
+    min_throttle: 0.5 # Minimum throttle (m/s)
+    max_throttle: 0.5 # Maximum throttle (m/s)
     max_steer: 0.4189 # Maximum steer (rad)
     dt: 0.1 # Timestep (s)
 
@@ -35,4 +35,7 @@ MPPI:
     raceline_weight: 0.2
     obstacle_dilation: 15
     raceline_dilation: 3
+
+    # Trajectory Evaluation Parameters
+    position_weight: 1.0
     heading_weight: 1.0

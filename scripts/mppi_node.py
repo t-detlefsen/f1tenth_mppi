@@ -128,6 +128,7 @@ class MPPI(Node):
                 ('raceline_weight', None),
                 ('obstacle_dilation', None),
                 ('raceline_dilation', None),
+                ('position_weight', None),
                 ('heading_weight', None),
             ])
         
@@ -152,6 +153,7 @@ class MPPI(Node):
             cost_map = self.update_cost_map(occupancy_grid)
         except Exception as e:
             self.warn_log.warn("Error updating cost map, skipping iteration")
+            print(e)
             return
 
         # Create Trajectories
@@ -276,14 +278,17 @@ class MPPI(Node):
 
         # Final cost map is a weighted sum of the obstacle cost and raceline cost
         cost_map = self.get_parameter("obstacle_weight").value * occupancy_grid + self.get_parameter("raceline_weight").value * raceline_cost
+        # cost_map = 100 * (cost_map / cost_map.max()) # normalize so that it's within 0-100
+        # cost_map = np.clip(cost_map, 0, 100).astype(int) # NOTE: Should we be clipping or normalizing? Do we need to?
 
         if self.get_parameter("visualize").value:
-            cost_map = np.clip(cost_map, 0, 100).astype(int) # NOTE: Should we be clipping or normalizing? Do we need to?
-            self.cost_map.data = cost_map.flatten().tolist()
+            # normalize so that it's within 0-100
+            cost_map_vis = 100 * (cost_map / cost_map.max())
+            self.cost_map.data = cost_map_vis.astype(int).flatten().tolist()
             self.cost_map.header.stamp = self.get_clock().now().to_msg()
             self.cost_map_pub_.publish(self.cost_map)
 
-        return cost_map
+        return cost_map / cost_map.max()
 
     def sample_trajectories(self, num_trajectories: int, steps_trajectories: int):
         '''
@@ -342,28 +347,35 @@ class MPPI(Node):
         # Handle trajectories that fall outside of the cost map
         trajectories_pixels = np.clip(trajectories_pixels[:, :, :2], 0, self.cost_map.info.width - 1)
 
-        # Evaluate trajectories and determine the lowest cost
-        traj_scores = np.sum(cost_map[trajectories_pixels[:, :, 1].astype(int), trajectories_pixels[:, :, 0].astype(int)], axis=1)
+        # Compute each trajectory's position score and normalize
+        position_traj_scores = np.sum(cost_map[trajectories_pixels[:, :, 1].astype(int), trajectories_pixels[:, :, 0].astype(int)], axis=1)
+        position_traj_scores /= position_traj_scores.max()
 
-        # now we will compare trajectory headings with waypoint headings
-        # Extract trajectory positions
+        # Compute each trajectory's heading scores
         traj_xy = trajectories[:, :, :2] # shape (N, T, 2)
         # Want shape (N, T, 1, 2) - (1, 1, W, 2) to become (N, T, W, 2)
         diff = traj_xy[:, :, np.newaxis, :] - self.waypoints[np.newaxis, np.newaxis, :, :2]
         dists = np.linalg.norm(diff, axis=-1) 
+        print(f"Shape of dists is {dists.shape}")
 
         # Find the index of the closest waypoint at each step
         closest_wp_indices = np.argmin(dists, axis=-1) # shape is (N,T)
-        desired_headings = np.take(self.waypoints[:, 2], closest_wp_indices) # use vectorized indexing
+        print(f"Shape of closest_wp_indices is {closest_wp_indices.shape}")
+        desired_headings = np.take(self.waypoints[:, 2], closest_wp_indices) # use vectorized indexing, shape is (N,T)
+        print(f"the desired headings are {desired_headings[:, 0]}")
+        # print(f"shape of desired headings is {desired_headings.shape}")
         # Extract the predicted headings
         traj_headings = trajectories[:, :, 2]  # Shape: (N, T)
+        print(f"the predicted trajectory headings are {traj_headings[:, 0]}")
         # Compute wrapped angular difference for each step.
         heading_errors = np.abs((traj_headings - desired_headings + np.pi) % (2 * np.pi) - np.pi)
 
         # Compute the per-trajectory heading cost by summing over all T steps.
-        heading_cost_per_traj = np.sum(heading_errors * self.get_parameter("heading_weight").value, axis=1)
-        traj_scores += heading_cost_per_traj.astype(int)
+        # also normalize it
+        heading_traj_scores = np.sum(heading_errors, axis=1)
+        heading_traj_scores /= heading_traj_scores.max()
 
+        traj_scores = self.get_parameter("position_weight").value * position_traj_scores + self.get_parameter("heading_weight").value * heading_traj_scores
         min_cost_idx = np.argmin(traj_scores)
 
         # Publish a lowest cost trajectory
