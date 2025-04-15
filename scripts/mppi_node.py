@@ -164,6 +164,7 @@ class MPPI(Node):
 
         # # Update u_mean
         # self.u_mean = actions[min_cost_idx, 0]
+        self.u_mean[0] = actions[min_cost_idx, 0, 0]
 
         # Publish AckermannDriveStamped Message
         self.info_log.info("Publishing drive command")
@@ -206,6 +207,8 @@ class MPPI(Node):
         # dilation_kernel = np.array([[0, 1, 0],
         #                             [1, 1, 1],
         #                             [0, 1, 0]], dtype=bool)
+
+        occupancy_grid[45:55, 0:10] = 0 # TODO: Put this in real world coordinates
 
         # Apply binary dilation to expand obstacles
         dilation_kernel = np.ones((self.get_parameter("obstacle_dilation").value, self.get_parameter("obstacle_dilation").value), dtype=bool)
@@ -272,9 +275,9 @@ class MPPI(Node):
 
         # Final cost map is a weighted sum of the obstacle cost and raceline cost
         cost_map = self.get_parameter("obstacle_weight").value * occupancy_grid + self.get_parameter("raceline_weight").value * raceline_cost
-        cost_map = np.clip(cost_map, 0, 100).astype(int) # NOTE: Should we be clipping or normalizing? Do we need to?
 
         if self.get_parameter("visualize").value:
+            cost_map = np.clip(cost_map, 0, 100).astype(int) # NOTE: Should we be clipping or normalizing? Do we need to?
             self.cost_map.data = cost_map.flatten().tolist()
             self.cost_map.header.stamp = self.get_clock().now().to_msg()
             self.cost_map_pub_.publish(self.cost_map)
