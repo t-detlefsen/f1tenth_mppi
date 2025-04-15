@@ -163,7 +163,7 @@ class MPPI(Node):
 
         # Evaluate Trajectories
         self.info_log.info("Evaluating trajectories")
-        min_cost_idx = self.evaluate_trajectories(cost_map, trajectories)
+        min_cost_idx = self.evaluate_trajectories(cost_map, trajectories, pose_msg)
 
         # # Update u_mean
         # self.u_mean = actions[min_cost_idx, 0]
@@ -328,13 +328,14 @@ class MPPI(Node):
 
         return trajectories, actions
     
-    def evaluate_trajectories(self, cost_map: np.ndarray, trajectories: np.ndarray) -> int:
+    def evaluate_trajectories(self, cost_map: np.ndarray, trajectories: np.ndarray, pose_msg: Odometry) -> int:
         '''
         Evaluate trajectories using the cost map
 
         Args:
             cost_map (ndarray): The cost map
             trajectories (np.ndarray): (num_trajectories x steps_trajectories x 3) Sampled trajectories
+            pose_msg (Odometry): Current pose of the car
         Returns:
             min_cost_idx (int): The index of the trajectory with the lowest cost
         '''
@@ -352,21 +353,20 @@ class MPPI(Node):
         position_traj_scores /= position_traj_scores.max()
 
         # Compute each trajectory's heading scores
+        car_x, car_y = pose_msg.pose.pose.position.x, pose_msg.pose.pose.position.y
+        # Set each trajectory point to global frame
         traj_xy = trajectories[:, :, :2] # shape (N, T, 2)
+        traj_xy[:, :, 0] += car_x
+        traj_xy[:, :, 1] += car_y
         # Want shape (N, T, 1, 2) - (1, 1, W, 2) to become (N, T, W, 2)
         diff = traj_xy[:, :, np.newaxis, :] - self.waypoints[np.newaxis, np.newaxis, :, :2]
-        dists = np.linalg.norm(diff, axis=-1) 
-        print(f"Shape of dists is {dists.shape}")
+        dists = np.linalg.norm(diff, axis=-1) # shape is (N, T, W)
 
         # Find the index of the closest waypoint at each step
         closest_wp_indices = np.argmin(dists, axis=-1) # shape is (N,T)
-        print(f"Shape of closest_wp_indices is {closest_wp_indices.shape}")
-        desired_headings = np.take(self.waypoints[:, 2], closest_wp_indices) # use vectorized indexing, shape is (N,T)
-        print(f"the desired headings are {desired_headings[:, 0]}")
-        # print(f"shape of desired headings is {desired_headings.shape}")
+        desired_headings = np.take(self.waypoints[:, 2], closest_wp_indices) # shape is (N,T)
         # Extract the predicted headings
         traj_headings = trajectories[:, :, 2]  # Shape: (N, T)
-        print(f"the predicted trajectory headings are {traj_headings[:, 0]}")
         # Compute wrapped angular difference for each step.
         heading_errors = np.abs((traj_headings - desired_headings + np.pi) % (2 * np.pi) - np.pi)
 
