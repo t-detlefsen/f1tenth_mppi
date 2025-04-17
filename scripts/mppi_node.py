@@ -162,7 +162,7 @@ class MPPI(Node):
 
         # Evaluate Trajectories
         self.info_log.info("Evaluating trajectories")
-        min_cost_idx = self.evaluate_trajectories(cost_map, trajectories, pose_msg, occupancy_grid)
+        min_cost_idx = self.evaluate_trajectories(cost_map, trajectories, occupancy_grid)
 
         if min_cost_idx == -1:
             drive_msg = AckermannDriveStamped()
@@ -283,7 +283,7 @@ class MPPI(Node):
         raceline_cost = distance_transform_edt(raceline_mask == 0)
 
         # Final cost map is a weighted sum of the obstacle cost and raceline cost
-        cost_map = self.get_parameter("obstacle_weight").value * occupancy_grid + self.get_parameter("raceline_weight").value * raceline_cost
+        cost_map = self.get_parameter("raceline_weight").value * raceline_cost
         # cost_map = 100 * (cost_map / cost_map.max()) # normalize so that it's within 0-100
         # cost_map = np.clip(cost_map, 0, 100).astype(int) # NOTE: Should we be clipping or normalizing? Do we need to?
 
@@ -312,7 +312,7 @@ class MPPI(Node):
         # v = self.u_mean[0] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("v_sigma").value
         # omega = self.u_mean[1] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("omega_sigma").value
 
-        v = (self.u_mean[0] + np.random.randn(num_trajectories, 1, 1) * self.get_parameter("v_sigma").value)
+        v = (self.get_parameter("max_throttle").value + np.random.randn(num_trajectories, 1, 1) * self.get_parameter("v_sigma").value)
         omega = (self.u_mean[1] + np.random.randn(num_trajectories, 1, 1) * self.get_parameter("omega_sigma").value)
 
         v = np.repeat(v, steps_trajectories - 1, axis=1)
@@ -362,13 +362,20 @@ class MPPI(Node):
         check_obs = occupancy_grid.astype(bool)[trajectories_pixels[:, :, 1].astype(int), trajectories_pixels[:, :, 0].astype(int)] # NxT
         bad_trajs = np.any(check_obs==True, axis=1) # (N,)
 
+        for i in range(check_obs.shape[0]):
+            try:
+                idx = np.where(check_obs[i] == True)[0][0]
+                check_obs[i, idx:] = True
+            except:
+                pass
+
         # Compute each trajectory's position score and normalize
         traj_scores = np.sum(cost_map[trajectories_pixels[:, :, 1].astype(int), trajectories_pixels[:, :, 0].astype(int)], axis=1)
         traj_scores /= traj_scores.max()
 
-        traj_scores[bad_trajs] = np.inf # completely throw away trajectories that touch an obstacle at any point
-        if np.all(traj_scores == np.inf):
-            return -1
+        traj_scores[bad_trajs] = 50
+        # if np.all(traj_scores == np.inf):
+        #     return -1
         min_cost_idx = np.argmin(traj_scores)
 
         # Publish a lowest cost trajectory
