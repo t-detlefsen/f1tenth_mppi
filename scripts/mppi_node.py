@@ -16,6 +16,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Point
+from transforms3d.euler import quat2euler
 
 from f1tenth_mppi.utils import *
 from f1tenth_mppi.dynamics_models import KBM
@@ -123,12 +124,10 @@ class MPPI(Node):
                 ('omega_sigma', None),
                 ('cost_map_width', None),
                 ('cost_map_res', None),
-                ('dist_cost_mult', None),
                 ('obstacle_weight', None),
                 ('raceline_weight', None),
                 ('obstacle_dilation', None),
                 ('raceline_dilation', None),
-                ('position_weight', None),
                 ('heading_weight', None),
             ])
         
@@ -163,7 +162,14 @@ class MPPI(Node):
 
         # Evaluate Trajectories
         self.info_log.info("Evaluating trajectories")
-        min_cost_idx = self.evaluate_trajectories(cost_map, trajectories, pose_msg)
+        min_cost_idx = self.evaluate_trajectories(cost_map, trajectories, pose_msg, occupancy_grid)
+
+        if min_cost_idx == -1:
+            drive_msg = AckermannDriveStamped()
+            drive_msg.drive.steering_angle = actions[min_cost_idx, 0, 1]
+            drive_msg.drive.speed = 0.0
+            self.drive_pub_.publish(drive_msg)
+            return
 
         # # Update u_mean
         # self.u_mean = actions[min_cost_idx, 0]
@@ -274,7 +280,7 @@ class MPPI(Node):
         raceline_mask = binary_dilation(raceline_mask, structure=dilation_kernel).astype(int) * 100
 
         # Compute the distance from raceline, for each grid cell
-        raceline_cost = self.get_parameter("dist_cost_mult").value * distance_transform_edt(raceline_mask == 0)
+        raceline_cost = distance_transform_edt(raceline_mask == 0)
 
         # Final cost map is a weighted sum of the obstacle cost and raceline cost
         cost_map = self.get_parameter("obstacle_weight").value * occupancy_grid + self.get_parameter("raceline_weight").value * raceline_cost
@@ -328,14 +334,14 @@ class MPPI(Node):
 
         return trajectories, actions
     
-    def evaluate_trajectories(self, cost_map: np.ndarray, trajectories: np.ndarray, pose_msg: Odometry) -> int:
+    def evaluate_trajectories(self, cost_map: np.ndarray, trajectories: np.ndarray, occupancy_grid: np.ndarray) -> int:
         '''
         Evaluate trajectories using the cost map
 
         Args:
             cost_map (ndarray): The cost map
             trajectories (np.ndarray): (num_trajectories x steps_trajectories x 3) Sampled trajectories
-            pose_msg (Odometry): Current pose of the car
+            occupancy_grid (ndarray): The processed occupancy grid
         Returns:
             min_cost_idx (int): The index of the trajectory with the lowest cost
         '''
@@ -348,34 +354,21 @@ class MPPI(Node):
         # Handle trajectories that fall outside of the cost map
         trajectories_pixels = np.clip(trajectories_pixels[:, :, :2], 0, self.cost_map.info.width - 1)
 
+        # if a trajectory touches an obstacle, then just completely ignore it 
+        # print(f"shape of traj pixels is {trajectories_pixels.shape}") # NxTx3
+        # print(f"Shape of occupancy grid is {occupancy_grid.shape}")
+
+        # bad_traj = [1, 0, 1, 0, 0,.. N]
+        check_obs = occupancy_grid.astype(bool)[trajectories_pixels[:, :, 1].astype(int), trajectories_pixels[:, :, 0].astype(int)] # NxT
+        bad_trajs = np.any(check_obs==True, axis=1) # (N,)
+
         # Compute each trajectory's position score and normalize
-        position_traj_scores = np.sum(cost_map[trajectories_pixels[:, :, 1].astype(int), trajectories_pixels[:, :, 0].astype(int)], axis=1)
-        position_traj_scores /= position_traj_scores.max()
+        traj_scores = np.sum(cost_map[trajectories_pixels[:, :, 1].astype(int), trajectories_pixels[:, :, 0].astype(int)], axis=1)
+        traj_scores /= traj_scores.max()
 
-        # Compute each trajectory's heading scores
-        car_x, car_y = pose_msg.pose.pose.position.x, pose_msg.pose.pose.position.y
-        # Set each trajectory point to global frame
-        traj_xy = trajectories[:, :, :2] # shape (N, T, 2)
-        traj_xy[:, :, 0] += car_x
-        traj_xy[:, :, 1] += car_y
-        # Want shape (N, T, 1, 2) - (1, 1, W, 2) to become (N, T, W, 2)
-        diff = traj_xy[:, :, np.newaxis, :] - self.waypoints[np.newaxis, np.newaxis, :, :2]
-        dists = np.linalg.norm(diff, axis=-1) # shape is (N, T, W)
-
-        # Find the index of the closest waypoint at each step
-        closest_wp_indices = np.argmin(dists, axis=-1) # shape is (N,T)
-        desired_headings = np.take(self.waypoints[:, 2], closest_wp_indices) # shape is (N,T)
-        # Extract the predicted headings
-        traj_headings = trajectories[:, :, 2]  # Shape: (N, T)
-        # Compute wrapped angular difference for each step.
-        heading_errors = np.abs((traj_headings - desired_headings + np.pi) % (2 * np.pi) - np.pi)
-
-        # Compute the per-trajectory heading cost by summing over all T steps.
-        # also normalize it
-        heading_traj_scores = np.sum(heading_errors, axis=1)
-        heading_traj_scores /= heading_traj_scores.max()
-
-        traj_scores = self.get_parameter("position_weight").value * position_traj_scores + self.get_parameter("heading_weight").value * heading_traj_scores
+        traj_scores[bad_trajs] = np.inf # completely throw away trajectories that touch an obstacle at any point
+        if np.all(traj_scores == np.inf):
+            return -1
         min_cost_idx = np.argmin(traj_scores)
 
         # Publish a lowest cost trajectory

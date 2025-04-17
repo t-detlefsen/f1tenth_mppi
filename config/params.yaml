@@ -1,7 +1,7 @@
 MPPI:
   ros__parameters:
-    visualize: False
-    waypoint_path: "aims_lockers.csv"
+    visualize: True
+    waypoint_path: "waypoints.csv"
     vehicle_frame: "ego_racecar/base_link"
 
     # Publisher Parameters
@@ -16,26 +16,22 @@ MPPI:
 
     # Model Parameters
     wheelbase: 0.33 # Wheelbase (m)
-    min_throttle: 0.5 # Minimum throttle (m/s)
-    max_throttle: 0.5 # Maximum throttle (m/s)
+    min_throttle: 1.3 # Minimum throttle (m/s)
+    max_throttle: 2.5 # Maximum throttle (m/s)
     max_steer: 0.4189 # Maximum steer (rad)
     dt: 0.1 # Timestep (s)
 
     # MPPI Parameters
     num_trajectories: 25
-    steps_trajectories: 5
-    v_sigma: 0.05
-    omega_sigma: 0.25
+    steps_trajectories: 10
+    v_sigma: 0.8
+    omega_sigma: 0.5
 
     # Cost Map Parameters
     cost_map_width: 100
     cost_map_res: 0.03
-    dist_cost_mult: 13
-    obstacle_weight: 10.0
-    raceline_weight: 0.2
-    obstacle_dilation: 15
+    obstacle_weight: 10
+    raceline_weight: 6.5
+    obstacle_dilation: 15 
     raceline_dilation: 3
 
-    # Trajectory Evaluation Parameters
-    position_weight: 1.0
-    heading_weight: 1.0
