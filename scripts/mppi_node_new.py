@@ -3,6 +3,7 @@
 import copy
 import numpy as np
 from scipy.ndimage import distance_transform_edt, binary_dilation
+from typing import Tuple
 
 import rclpy
 import tf2_ros
@@ -142,6 +143,7 @@ class MPPI(Node):
         u = self.u_prev
         
         # TODO: Find the nearest waypoint
+        # NOTE Brian: don't think we need this, in the original code they update the nearest waypoint for computation speedup. but our nearest waypoint code is vectorized hahaha
 
         # Calculate noise to add to control
         mu = np.zeros(2)
@@ -172,12 +174,12 @@ class MPPI(Node):
                 # Update state
                 x = self.model.predict_euler(np.expand_dims(x, 0),
                                              np.expand_dims(u_step, 0))
-
+                x = x.squeeze()
                 # TODO: Add stage cost
-                S[i] += ...
+                S[i] += self.compute_stage_cost(x, pose_msg)
 
             # TODO: Add terminal cost
-            S[i] += ...
+            S[i] += self.compute_terminal_cost(x, pose_msg)
 
         # TODO: Compute information theoretic weights for each sample ???
         # TODO: Calculate + smooth added noise
@@ -193,6 +195,95 @@ class MPPI(Node):
         drive_msg.drive.speed = u[0, 0]
         drive_msg.drive.steering_angle = u[0, 1]
         self.drive_pub_.publish(drive_msg)
+
+    def compute_stage_cost(self, x_t: np.ndarray, pose_msg: Odometry) -> float:
+        '''
+        Calculate stage cost
+
+        Args:
+            x_t (np.ndarray): current state
+            pose_msg (Odometry): Robot pose
+        Returns:
+            stage_cost (float): computed stage cost
+        '''
+        stage_cost_weights = [50.0, 50.0, 1.0] # TODO: add these to params.yaml
+        x, y, yaw = x_t
+        yaw = ((yaw + 2.0*np.pi) % (2.0*np.pi)) # normalize theta to [0, 2*pi]
+
+        # calculate stage cost
+        _, ref_x, ref_y, ref_yaw, _ = self.get_nearest_waypoint(x, y)
+        stage_cost = stage_cost_weights[0]*(x-ref_x)**2 + stage_cost_weights[1]*(y-ref_y)**2 + stage_cost_weights[2]*(yaw-ref_yaw)**2 
+        
+        # add penalty for collision with obstacles
+        stage_cost += self.is_collided(x_t, pose_msg) * 1.0e10
+
+        return stage_cost
+
+    def compute_terminal_cost(self, x_T: np.ndarray, pose_msg: Odometry) -> float:
+        '''
+        Calculate terminal cost
+
+        Args:
+            x_T (np.ndarray): final state
+            pose_msg (Odometry): Robot pose
+        Returns:
+            terminal_cost (float): computed terminal cost
+        '''
+        terminal_cost_weights = [50.0, 50.0, 1.0] # TODO: add these to params.yaml
+        x, y, yaw = x_T
+        yaw = ((yaw + 2.0*np.pi) % (2.0*np.pi)) # normalize theta to [0, 2*pi]
+
+        # calculate stage cost
+        _, ref_x, ref_y, ref_yaw, _ = self.get_nearest_waypoint(x, y)
+        stage_cost = terminal_cost_weights[0]*(x-ref_x)**2 + terminal_cost_weights[1]*(y-ref_y)**2 + terminal_cost_weights[2]*(yaw-ref_yaw)**2 
+        
+        # add penalty for collision with obstacles
+        stage_cost += self.is_collided(x_T, pose_msg) * 1.0e10
+
+        return stage_cost
+
+    def get_nearest_waypoint(self, x: float, y: float) -> Tuple[float, float, float, float, float]:
+        '''
+        Search the closest waypoint to the vehicle on the reference path
+
+        Args:
+            x (float): Input x position
+            y (float): Input y position
+        Returns:
+            nearest_waypoint (Tuple): Returns waypoint index and information
+        '''
+        cur_state = np.array([x, y]) 
+        distances = np.linalg.norm(cur_state - self.waypoints[:, :2], axis=1) # shape is (N,)
+        min_idx = np.argmin(distances)
+        wp_x, wp_y, wp_yaw, wp_v = self.waypoints[min_idx]
+        return min_idx, wp_x, wp_y, wp_yaw, wp_v
+    
+    def is_collided(self, x_t: np.ndarray, pose_msg: Odometry) -> bool:
+        '''
+        Checks if the current state is collided with an obstacle
+
+        Args:
+            x_t (np.ndarray): current state
+            pose_msg (Odometry): Received pose odometry message
+        Returns:
+            is_collided (bool): Returns whether or not the input state is on an obstacle
+        '''
+        occupancy_data = np.array(self.og.data).reshape((self.og.info.height, self.og.info.width))
+
+        car_x, car_y = pose_msg.pose.pose.position.x, pose_msg.pose.pose.position.y
+
+        # convert the state into egocar frame, then occupancy grid frame
+        state_pos = np.array([x_t[0], x_t[1]])      
+        state_pos[0] -= car_x
+        state_pos[1] -= car_y
+        state_pos_pixels = state_pos / self.og.info.resolution
+        state_pos_pixels[1] = state_pos_pixels[1] + (self.og.info.height / 2)
+        state_pos_pixels = np.clip(state_pos_pixels, 0, self.og.info.width - 1)
+
+        if occupancy_data[state_pos_pixels[1].astype(int), state_pos_pixels[0].astype(int)] > 0:
+            return True
+        
+        return False
 
     def create_occupancy_grid(self, scan_msg: LaserScan) -> np.ndarray:
         '''
@@ -239,7 +330,7 @@ class MPPI(Node):
 
         return occupancy_grid
 
-def main(args=None):
+def main(args=None)
     rclpy.init(args=args)
     mppi_node = MPPI()
     rclpy.spin(mppi_node)
