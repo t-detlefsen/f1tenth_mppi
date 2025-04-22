@@ -6,7 +6,7 @@ MPPI:
 
     # Publisher Parameters
     drive_topic: "/drive"
-    # occupancy_topic: "/occupancy"
+    occupancy_topic: "/occupancy"
     # cost_map_topic: "/cost_map"
     # marker_topic: "/trajectory"
 
@@ -24,14 +24,14 @@ MPPI:
     # MPPI Parameters
     num_trajectories: 250
     steps_trajectories: 20
-    # v_sigma: 1
-    # omega_sigma: 0.2
+    v_sigma: 0.1
+    omega_sigma: 0.5
 
     # # Cost Map Parameters
-    # cost_map_width: 100
-    # cost_map_res: 0.05
+    cost_map_width: 100
+    cost_map_res: 0.05
     # obstacle_weight: 10
     # raceline_weight: 6.5
-    # obstacle_dilation: 15 
+    occupancy_dilation: 15
     # raceline_dilation: 3
 

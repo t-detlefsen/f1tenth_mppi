@@ -41,6 +41,7 @@ ament_python_install_package(${PROJECT_NAME})
 # Install Python executables
 install(PROGRAMS
   scripts/mppi_node.py
+  scripts/mppi_node_new.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

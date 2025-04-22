@@ -55,7 +55,7 @@ class MPPI(Node):
         self.og.info.origin.position.y = -(self.og.info.height * self.og.info.resolution) / 2
 
         # Initialize previous control input sequence
-        self.u_prev = np.zeros((self.get_parameter("steps_trajectories").value), 2)
+        self.u_prev = np.zeros((self.get_parameter("steps_trajectories").value, 2))
 
         # Load Waypoints
         try:
@@ -76,13 +76,6 @@ class MPPI(Node):
         self.occupancy_pub_ = self.create_publisher(OccupancyGrid,
                                                 self.get_parameter("occupancy_topic").value,
                                                 10)
-        self.marker_pub_ = self.create_publisher(MarkerArray,
-                                                self.get_parameter("marker_topic").value,
-                                                10)
-        
-        # Visualize waypoints
-        if self.get_parameter("visualize").value:
-            self.publish_markers(self.waypoints, np.array([1.0, 0.0, 0.0]), "waypoints")
 
         # Create message_filters Subscribers
         self.scan_sub_ = Subscriber(self, LaserScan, self.get_parameter("scan_topic").value)
@@ -105,6 +98,7 @@ class MPPI(Node):
                 ('waypoint_path', None),
                 ('vehicle_frame', None),
                 ('drive_topic', None),
+                ('occupancy_topic', None),
                 ('pose_topic', None),
                 ('scan_topic', None),
                 ('wheelbase', None),
@@ -114,6 +108,11 @@ class MPPI(Node):
                 ('dt', None),
                 ('num_trajectories', None),
                 ('steps_trajectories', None),
+                ('v_sigma', None),
+                ('omega_sigma', None),
+                ('cost_map_width', None),
+                ('cost_map_res', None),
+                ('occupancy_dilation', None),
             ])
         
     def callback(self, scan_msg: LaserScan, pose_msg: Odometry):
@@ -142,7 +141,16 @@ class MPPI(Node):
         # Load previous control input sequence
         u = self.u_prev
         
-        # TODO: Find the nearest waypoint # NOTE: Should this be done once or for every state?
+        # TODO: Find the nearest waypoint
+
+        # Calculate noise to add to control
+        mu = np.zeros(2)
+        sigma = np.array([[self.get_parameter("v_sigma").value, 0.0],
+                          [0.0, self.get_parameter("omega_sigma").value]])
+        epsilon = np.random.multivariate_normal(mu, sigma, (self.get_parameter("num_trajectories").value, self.get_parameter("steps_trajectories").value))
+
+        # Initialize state cost
+        S = np.zeros(self.get_parameter("num_trajectories").value)
 
         # Loop through trajectories # NOTE: This outer loop can be vectorized
         for i in range(self.get_parameter("num_trajectories").value):
@@ -150,12 +158,26 @@ class MPPI(Node):
             x = x0
 
             # Loop through timesteps
-            for j in range(self.get_parameter("steps_trajectories").value):
-                # TODO: Randomly sample control + noise or pure noise (exploitation / exploration) + Clamp
-                # TODO: Update state
-                x = self.model.predict(x, ...)
+            for j in range(1, self.get_parameter("steps_trajectories").value + 1):
+                # Sample control
+                if i < 0.95 * self.get_parameter("num_trajectories").value: # TODO: Make parameter
+                    u_step = u[j-1] + epsilon[i, j-1] # Exploitation (Add noise to control)
+                else:
+                    u_step = epsilon[i, j-1] # Exploration (control is noise)
+
+                # Clamp control inputs
+                u_step[0] = np.clip(u_step[0], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
+                u_step[1] = np.clip(u_step[1], -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
+
+                # Update state
+                x = self.model.predict_euler(np.expand_dims(x, 0),
+                                             np.expand_dims(u_step, 0))
+
                 # TODO: Add stage cost
+                S[i] += ...
+
             # TODO: Add terminal cost
+            S[i] += ...
 
         # TODO: Compute information theoretic weights for each sample ???
         # TODO: Calculate + smooth added noise
@@ -206,7 +228,7 @@ class MPPI(Node):
         occupancy_grid[45:55, 0:10] = 0 # TODO: Put this in real world coordinates
 
         # Apply binary dilation to expand obstacles
-        dilation_kernel = np.ones((self.get_parameter("obstacle_dilation").value, self.get_parameter("obstacle_dilation").value), dtype=bool)
+        dilation_kernel = np.ones((self.get_parameter("occupancy_dilation").value, self.get_parameter("occupancy_dilation").value), dtype=bool)
         occupancy_grid = binary_dilation(occupancy_grid, structure=dilation_kernel).astype(int) * 100
 
         # Prepare and publish the updated occupancy grid
