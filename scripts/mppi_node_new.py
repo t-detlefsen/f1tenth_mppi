@@ -78,6 +78,9 @@ class MPPI(Node):
         self.occupancy_pub_ = self.create_publisher(OccupancyGrid,
                                                 self.get_parameter("occupancy_topic").value,
                                                 10)
+        self.marker_pub_ = self.create_publisher(MarkerArray,
+                                                self.get_parameter("marker_topic").value,
+                                                10)
 
         # Create message_filters Subscribers
         self.scan_sub_ = Subscriber(self, LaserScan, self.get_parameter("scan_topic").value)
@@ -101,6 +104,7 @@ class MPPI(Node):
                 ('vehicle_frame', None),
                 ('drive_topic', None),
                 ('occupancy_topic', None),
+                ('marker_topic', None),
                 ('pose_topic', None),
                 ('scan_topic', None),
                 ('wheelbase', None),
@@ -209,6 +213,16 @@ class MPPI(Node):
         self.u_prev[:-1] = u[1:]
         self.u_prev[-1] = u[-1]
 
+        # import ipdb
+        # ipdb.set_trace()
+        traj = np.zeros((self.get_parameter("steps_trajectories").value+1, 3))
+        traj[0] = x0
+        for i in range(self.get_parameter("steps_trajectories").value):
+            traj[i+1] = self.model.predict_euler(np.expand_dims(traj[i], 0),
+                                         np.expand_dims(u[i], 0)).squeeze()
+            
+        self.publish_trajectories(np.expand_dims(traj, 0))
+
         # Publish AckermannDriveStamped Message
         self.info_log.info("Publishing drive command")
         drive_msg = AckermannDriveStamped()
@@ -268,7 +282,15 @@ class MPPI(Node):
 
         # calculate stage cost
         _, ref_x, ref_y, ref_yaw, _ = self.get_nearest_waypoint(x, y)
+        
+        # Fix yaw
         ref_yaw = ref_yaw + np.pi / 2
+        ref_yaw = ((ref_yaw + 2.0*np.pi) % (2.0*np.pi))
+        if ref_yaw - yaw > 4.5:
+            ref_yaw = abs(ref_yaw - 2 * np.pi)
+        elif ref_yaw - yaw < -4.5:
+            ref_yaw = abs(ref_yaw + 2 * np.pi)
+        
         stage_cost = terminal_cost_weights[0]*(x-ref_x)**2 + terminal_cost_weights[1]*(y-ref_y)**2 + terminal_cost_weights[2]*(yaw-ref_yaw)**2 
         
         # add penalty for collision with obstacles
@@ -417,6 +439,49 @@ class MPPI(Node):
             self.occupancy_pub_.publish(self.og)
 
         return occupancy_grid
+    
+    def publish_trajectories(self, points: np.ndarray, color: np.ndarray = np.array([0.0, 0.0, 1.0])):
+        '''
+        Publish MarkerArray message of lines
+
+        Args:
+            points (ndarray): NxMx2 array of points to publish
+            color (ndarray): The color of the points
+        '''
+
+        if not self.get_parameter("visualize").value:
+            return
+
+        # import ipdb; ipdb.set_trace()
+
+        # Generate MarkerArray message
+        marker_array = MarkerArray()
+        for j in range(points.shape[0]):
+            for i in range(points.shape[1] - 1):
+                marker = Marker()
+                marker.header.frame_id = "map"
+                marker.id = j * points.shape[1] + i
+                marker.header.stamp = self.get_clock().now().to_msg()
+                marker.type = Marker.LINE_LIST
+                marker.action = Marker.ADD
+                marker.color.r = color[0]
+                marker.color.g = color[1]
+                marker.color.b = color[2]
+                marker.color.a = 1.0
+                marker.scale.x = 0.01
+
+                p1 = Point()
+                p1.x = points[j, i, 0]
+                p1.y = points[j, i, 1]
+                p2 = Point()
+                p2.x = points[j, i+1, 0]
+                p2.y = points[j, i+1, 1]
+
+                marker.points = [p1, p2]
+                marker_array.markers.append(marker)
+
+        # Publish MarkerArray Message
+        self.marker_pub_.publish(marker_array)
 
 def main(args=None):
     rclpy.init(args=args)
