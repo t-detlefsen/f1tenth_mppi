@@ -26,6 +26,6 @@ def load_waypoints(file_path: str) -> np.ndarray:
             next(csv_reader)
 
         for i, row in enumerate(csv_reader):
-            waypoints.append([float(row[1]), float(row[2]), float(row[3]), 0.5*float(row[5])])
+            waypoints.append([float(row[1]), float(row[2]), float(row[3]), float(row[5])])
 
     return np.array(waypoints)

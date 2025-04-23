@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import copy
+import math
 import numpy as np
 from scipy.ndimage import distance_transform_edt, binary_dilation
 from typing import Tuple
@@ -134,10 +135,14 @@ class MPPI(Node):
         # ---------- MPPI ----------
         # Set initial state
         quat = [pose_msg.pose.pose.orientation.x, pose_msg.pose.pose.orientation.y, pose_msg.pose.pose.orientation.z, pose_msg.pose.pose.orientation.w]
+        yaw = transforms3d.euler.quat2euler(quat)[0]
+
+        if yaw < 0:
+            yaw += 2 * np.pi
 
         x0 = np.array([pose_msg.pose.pose.position.x,
                        pose_msg.pose.pose.position.y,
-                       transforms3d.euler.quat2euler(quat)[0]]) # NOTE: Make sure yaw is correct
+                       yaw]) # NOTE: Make sure yaw is correct
         
         # Load previous control input sequence
         u = self.u_prev
@@ -175,14 +180,29 @@ class MPPI(Node):
                 x = self.model.predict_euler(np.expand_dims(x, 0),
                                              np.expand_dims(u_step, 0))
                 x = x.squeeze()
-                # TODO: Add stage cost
+
+                # Add stage cost
                 S[i] += self.compute_stage_cost(x, pose_msg)
 
-            # TODO: Add terminal cost
+            # Add terminal cost
             S[i] += self.compute_terminal_cost(x, pose_msg)
 
-        # TODO: Compute information theoretic weights for each sample ???
-        # TODO: Calculate + smooth added noise
+        # Compute information theoretic weights for each sample ???
+        w = self.compute_weights(S)
+
+        # Calculate + smooth added noise
+        w_epsilon = np.zeros((self.get_parameter("steps_trajectories").value, 2))
+        for i in range(self.get_parameter("steps_trajectories").value):
+            for j in range(self.get_parameter("num_trajectories").value):
+                w_epsilon[i] += w[j] * epsilon[j, i]
+
+        w_epsilon = self.moving_average(w_epsilon, 10)
+
+        # Update control input sequence
+        u += w_epsilon
+
+        u[:, 0] = np.clip(u[:, 0], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
+        u[:, 1] = np.clip(u[:, 1], -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
         # --------------------------
 
         # Update control sequence
@@ -212,8 +232,21 @@ class MPPI(Node):
 
         # calculate stage cost
         _, ref_x, ref_y, ref_yaw, _ = self.get_nearest_waypoint(x, y)
-        stage_cost = stage_cost_weights[0]*(x-ref_x)**2 + stage_cost_weights[1]*(y-ref_y)**2 + stage_cost_weights[2]*(yaw-ref_yaw)**2 
         
+        # Fix yaw
+        ref_yaw = ref_yaw + np.pi / 2
+        ref_yaw = ((ref_yaw + 2.0*np.pi) % (2.0*np.pi))
+        if ref_yaw - yaw > 4.5:
+            ref_yaw = abs(ref_yaw - 2 * np.pi)
+        elif ref_yaw - yaw < -4.5:
+            ref_yaw = abs(ref_yaw + 2 * np.pi)
+
+        stage_cost = stage_cost_weights[0]*(x-ref_x)**2 + stage_cost_weights[1]*(y-ref_y)**2 + stage_cost_weights[2]*(ref_yaw-ref_yaw)**2 
+
+        # print(f"Vehicle x: {x} Traj x: {ref_x}")
+        # print(f"Vehicle y: {y} Traj y: {ref_y}")
+        # print(f"Vehicle yaw: {yaw} Traj yaw: {ref_yaw}")
+
         # add penalty for collision with obstacles
         stage_cost += self.is_collided(x_t, pose_msg) * 1.0e10
 
@@ -235,6 +268,7 @@ class MPPI(Node):
 
         # calculate stage cost
         _, ref_x, ref_y, ref_yaw, _ = self.get_nearest_waypoint(x, y)
+        ref_yaw = ref_yaw + np.pi / 2
         stage_cost = terminal_cost_weights[0]*(x-ref_x)**2 + terminal_cost_weights[1]*(y-ref_y)**2 + terminal_cost_weights[2]*(yaw-ref_yaw)**2 
         
         # add penalty for collision with obstacles
@@ -285,6 +319,60 @@ class MPPI(Node):
         
         return False
 
+    def compute_weights(self, S: np.ndarray) -> np.ndarray:
+        '''
+        Compute information theoretic weights for each sample
+
+        Args:
+            S (ndarray): Cost of each trajectory
+        Returns:
+            w (ndarray): Weight for each trajectory
+        '''
+        # Calculate rho
+        rho = S.min()
+
+        param_lambda = 100.0 # TODO: Make parameter
+
+        # Calculate eta
+        eta = 0.0
+        for k in range(self.get_parameter("num_trajectories").value):
+            eta += np.exp((-1.0/param_lambda) * (S[k]-rho))
+
+        # Calculate weight
+        w = np.zeros(self.get_parameter("num_trajectories").value)
+        for k in range(self.get_parameter("num_trajectories").value):
+            w[k] = (1.0 / eta) * np.exp( (-1.0/param_lambda) * (S[k]-rho) )
+        
+        return w
+
+    def moving_average(self, xx: np.ndarray, window_size: int) -> np.ndarray:
+        '''
+        Apply moving average filter to sequence
+
+        Args:
+            xx (ndarray): Sequence
+            window_size (ndarray): Size of window to apply filter
+        Returns:
+            xx_mean (ndarray): Smoothed sequence
+        '''
+
+        """apply moving average filter for smoothing input sequence
+        Ref. https://zenn.dev/bluepost/articles/1b7b580ab54e95
+        Note: The original MPPI paper uses the Savitzky-Golay Filter for smoothing control inputs.
+        """
+        b = np.ones(window_size)/window_size
+        dim = xx.shape[1]
+        xx_mean = np.zeros(xx.shape)
+
+        for d in range(dim):
+            xx_mean[:,d] = np.convolve(xx[:,d], b, mode="same")
+            n_conv = math.ceil(window_size/2)
+            xx_mean[0,d] *= window_size/n_conv
+            for i in range(1, n_conv):
+                xx_mean[i,d] *= window_size/(i+n_conv)
+                xx_mean[-i,d] *= window_size/(i + n_conv - (window_size % 2)) 
+        return xx_mean
+
     def create_occupancy_grid(self, scan_msg: LaserScan) -> np.ndarray:
         '''
         Process the LaserScan data into an occupancy grid
@@ -323,14 +411,14 @@ class MPPI(Node):
         occupancy_grid = binary_dilation(occupancy_grid, structure=dilation_kernel).astype(int) * 100
 
         # Prepare and publish the updated occupancy grid
+        self.og.data = occupancy_grid.flatten().tolist()
         if self.get_parameter("visualize").value:
-            self.og.data = occupancy_grid.flatten().tolist()
             self.og.header.stamp = self.get_clock().now().to_msg()
             self.occupancy_pub_.publish(self.og)
 
         return occupancy_grid
 
-def main(args=None)
+def main(args=None):
     rclpy.init(args=args)
     mppi_node = MPPI()
     rclpy.spin(mppi_node)
