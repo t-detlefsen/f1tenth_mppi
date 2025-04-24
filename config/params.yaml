@@ -21,9 +21,9 @@ MPPI:
     dt: 0.1 # Timestep (s)
 
     # MPPI Parameters
-    num_trajectories: 10
-    steps_trajectories: 25
-    v_sigma: 2.0
+    num_trajectories: 50
+    steps_trajectories: 30
+    v_sigma: 0.2
     omega_sigma: 0.25
 
     # Cost Map Parameters

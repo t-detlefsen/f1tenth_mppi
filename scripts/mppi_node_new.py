@@ -3,14 +3,13 @@
 import copy
 import math
 import numpy as np
-from scipy.ndimage import distance_transform_edt, binary_dilation
+from scipy.ndimage import binary_dilation
 from typing import Tuple
 
 import rclpy
 import tf2_ros
 from rclpy.node import Node
 from message_filters import Subscriber, ApproximateTimeSynchronizer
-from rclpy.duration import Duration
 
 from ackermann_msgs.msg import AckermannDriveStamped
 from nav_msgs.msg import OccupancyGrid
@@ -18,7 +17,6 @@ from visualization_msgs.msg import Marker, MarkerArray
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Point
-from transforms3d.euler import quat2euler
 import transforms3d
 
 from f1tenth_mppi.utils import *
@@ -62,6 +60,8 @@ class MPPI(Node):
         # Load Waypoints
         try:
             self.waypoints = load_waypoints(self.get_parameter("waypoint_path").value)
+            self.waypoints[:, 3] = np.clip(self.waypoints[:, 3], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
+            # self.waypoints[:, 3] = (self.waypoints[:, 3]) / np.max(self.waypoints[:, 3]) * self.get_parameter("max_throttle").value
         except Exception as e:
             self.error_log.error("Issue loading waypoints")
             self.error_log.error(e)
@@ -138,7 +138,7 @@ class MPPI(Node):
 
         # Create Occupancy Grid
         self.info_log.info("Creating occupancy grid")
-        occupancy_grid = self.create_occupancy_grid(scan_msg)
+        self.create_occupancy_grid(scan_msg)
 
         # ---------- MPPI ----------
         # Set initial state
@@ -150,13 +150,10 @@ class MPPI(Node):
 
         x0 = np.array([pose_msg.pose.pose.position.x,
                        pose_msg.pose.pose.position.y,
-                       yaw]) # NOTE: Make sure yaw is correct
+                       yaw])
         
         # Load previous control input sequence
         u = self.u_prev
-        
-        # TODO: Find the nearest waypoint
-        # NOTE Brian: don't think we need this, in the original code they update the nearest waypoint for computation speedup. but our nearest waypoint code is vectorized hahaha
 
         # Calculate noise to add to control
         mu = np.zeros(2)
@@ -171,51 +168,40 @@ class MPPI(Node):
                       self.get_parameter("steps_trajectories").value,
                       2))
 
-        # Loop through trajectories # NOTE: This outer loop can be vectorized
-        for i in range(self.get_parameter("num_trajectories").value):
-            # Reset state
-            x = x0
+        x = np.zeros((self.get_parameter("num_trajectories").value,
+                      self.get_parameter("steps_trajectories").value+1,
+                    3))
+        x[:, 0] = x0
+        
+        # Loop through timesteps
+        for j in range(1, self.get_parameter("steps_trajectories").value):
+            # Add noise to control
+            v[:, j-1] = u[j-1] + epsilon[:, j-1]
 
-            # Loop through timesteps
-            for j in range(1, self.get_parameter("steps_trajectories").value + 1):
-                # Sample control
-                if i < 0.95 * self.get_parameter("num_trajectories").value: # TODO: Make parameter
-                    v[i, j-1] = u[j-1] + epsilon[i, j-1] # Exploitation (Add noise to control)
-                else:
-                    v[i, j-1] = epsilon[i, j-1] # Exploration (control is noise)
+            # Clamp control inputs
+            v[:, j-1, 0] = np.clip(v[:, j-1, 0], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
+            v[:, j-1, 1] = np.clip(v[:, j-1, 1], -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
 
-                # Clamp control inputs
-                v[i, j-1, 0] = np.clip(v[i, j-1, 0], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
-                v[i, j-1, 1] = np.clip(v[i, j-1, 1], -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
+            # Update state
+            x[:, j] = self.model.predict_euler(x[:, j-1], v[:, j-1])
 
-                # Update state
-                x = self.model.predict_euler(np.expand_dims(x, 0),
-                                             np.expand_dims(v[i, j-1], 0))
-                x = x.squeeze()
+            # Add stage cost
+            param_gamma = 100 * (1.0 - 0.98)
+            correction = u[0] @ np.linalg.inv(sigma) @ np.transpose(v[:, 0])
+            S += self.compute_cost(x[:, j], v[:, 0, 0], pose_msg).squeeze() + param_gamma * correction
 
-                # Add stage cost
-                param_gamma = 10 * (1.0 - 0.98)
-                correction = u[j-1] @ np.linalg.inv(sigma) @ v[i, j-1]
-                S[i] += self.compute_stage_cost(x, pose_msg) + param_gamma * correction
-
-            # Add terminal cost
-            S[i] += self.compute_terminal_cost(x, pose_msg)
+        # # Add terminal cost
+        # S += self.compute_cost(x[:, j], pose_msg)
 
         # Compute information theoretic weights for each sample ???
         w = self.compute_weights(S)
 
         # Calculate + smooth added noise
-        w_epsilon = np.zeros((self.get_parameter("steps_trajectories").value, 2))
-        for i in range(self.get_parameter("steps_trajectories").value):
-            for j in range(self.get_parameter("num_trajectories").value):
-                w_epsilon[i] += w[j] * epsilon[j, i]
-
+        w_epsilon = np.sum(np.multiply(w[:, np.newaxis, np.newaxis], epsilon), axis=0)
         w_epsilon = self.moving_average(w_epsilon, 10)
 
         # Update control input sequence
         u += w_epsilon
-
-        # u = v[np.argmin(S)]
 
         u[:, 0] = np.clip(u[:, 0], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
         u[:, 1] = np.clip(u[:, 1], -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
@@ -232,26 +218,14 @@ class MPPI(Node):
         #     trajs[:, i+1] = self.model.predict_euler(trajs[:, i], v[:, i])
         # self.publish_trajectories(trajs, ns="all")
 
-        # # PSEUDO OPTIMAL
-        # idx = np.argmin(S)
-        # traj = np.zeros((self.get_parameter("steps_trajectories").value+1, 3))
-        # traj[0] = x0
-        # pseudo_cost = 0
-        # for i in range(self.get_parameter("steps_trajectories").value):
-        #     traj[i+1] = self.model.predict_euler(np.expand_dims(traj[i], 0),
-        #                                  np.expand_dims(v[idx, i], 0)).squeeze()
-        #     pseudo_cost += self.compute_stage_cost(traj[i+1], pose_msg)
-        # self.publish_trajectories(np.expand_dims(traj, 0), color=np.array([0.0, 1.0, 0.0]), ns="ps")
+        print(np.min(S))
 
         # OPTIMAL TRAJECTORY
         traj = np.zeros((self.get_parameter("steps_trajectories").value+1, 3))
         traj[0] = x0
-        cost = 0
         for i in range(self.get_parameter("steps_trajectories").value):
             traj[i+1] = self.model.predict_euler(np.expand_dims(traj[i], 0),
                                          np.expand_dims(u[i], 0)).squeeze()
-            cost += self.compute_stage_cost(traj[i+1], pose_msg)
-        print(f"Cost: {cost}")
         self.publish_trajectories(np.expand_dims(traj, 0), color=np.array([1.0, 0.0, 0.0]), ns="opt")
 
         # Publish AckermannDriveStamped Message
@@ -261,7 +235,7 @@ class MPPI(Node):
         drive_msg.drive.steering_angle = u[0, 1]
         self.drive_pub_.publish(drive_msg)
 
-    def compute_stage_cost(self, x_t: np.ndarray, pose_msg: Odometry) -> float:
+    def compute_cost(self, x_t: np.ndarray, v_t: np.ndarray, pose_msg: Odometry) -> np.ndarray:
         '''
         Calculate stage cost
 
@@ -271,61 +245,30 @@ class MPPI(Node):
         Returns:
             stage_cost (float): computed stage cost
         '''
-        stage_cost_weights = [50.0, 50.0, 1.0] # TODO: add these to params.yaml
-        x, y, yaw = x_t
-        yaw = ((yaw + 2.0*np.pi) % (2.0*np.pi)) # normalize theta to [0, 2*pi]
+
+        stage_cost_weights = [50.0, 50.0, 1.0, 20.0] # TODO: add these to params.yaml
+        x, y, yaw = np.hsplit(x_t, 3)
+        v = np.expand_dims(v_t, 1)
+        yaw[yaw < 0] = yaw[yaw < 0] + 2 * np.pi
 
         # calculate stage cost
-        _, ref_x, ref_y, ref_yaw, _ = self.get_nearest_waypoint(x, y)
+        _, ref_x, ref_y, ref_yaw, ref_v = self.get_nearest_waypoint(x, y)
         
         # Fix yaw
         ref_yaw = ref_yaw + np.pi / 2
-        ref_yaw = ((ref_yaw + 2.0*np.pi) % (2.0*np.pi))
-        if ref_yaw - yaw > 4.5:
-            ref_yaw = abs(ref_yaw - 2 * np.pi)
-        elif ref_yaw - yaw < -4.5:
-            ref_yaw = abs(ref_yaw + 2 * np.pi)
+        ref_yaw[ref_yaw < 0] = ref_yaw[ref_yaw < 0] + 2 * np.pi
+        ref_yaw[ref_yaw - yaw > 4.5] = np.abs(
+            ref_yaw[ref_yaw - yaw > 4.5] - (2 * np.pi)
+        )
+        ref_yaw[ref_yaw - yaw < -4.5] = np.abs(
+            ref_yaw[ref_yaw - yaw < -4.5] + (2 * np.pi)
+        )
 
-        stage_cost = stage_cost_weights[0]*(x-ref_x)**2 + stage_cost_weights[1]*(y-ref_y)**2 + stage_cost_weights[2]*(ref_yaw-ref_yaw)**2 
-
-        # print(f"Vehicle x: {x} Traj x: {ref_x}")
-        # print(f"Vehicle y: {y} Traj y: {ref_y}")
-        # print(f"Vehicle yaw: {yaw} Traj yaw: {ref_yaw}")
+        stage_cost = stage_cost_weights[0]*(x-ref_x)**2 + stage_cost_weights[1]*(y-ref_y)**2 + \
+                     stage_cost_weights[2]*(ref_yaw-ref_yaw)**2 + stage_cost_weights[3]*(v-ref_v)**2
 
         # add penalty for collision with obstacles
-        # stage_cost += self.is_collided(x_t, pose_msg) * 1.0e10
-
-        return stage_cost
-
-    def compute_terminal_cost(self, x_T: np.ndarray, pose_msg: Odometry) -> float:
-        '''
-        Calculate terminal cost
-
-        Args:
-            x_T (np.ndarray): final state
-            pose_msg (Odometry): Robot pose
-        Returns:
-            terminal_cost (float): computed terminal cost
-        '''
-        terminal_cost_weights = [50.0, 50.0, 1.0] # TODO: add these to params.yaml
-        x, y, yaw = x_T
-        yaw = ((yaw + 2.0*np.pi) % (2.0*np.pi)) # normalize theta to [0, 2*pi]
-
-        # calculate stage cost
-        _, ref_x, ref_y, ref_yaw, _ = self.get_nearest_waypoint(x, y)
-        
-        # Fix yaw
-        ref_yaw = ref_yaw + np.pi / 2
-        ref_yaw = ((ref_yaw + 2.0*np.pi) % (2.0*np.pi))
-        if ref_yaw - yaw > 4.5:
-            ref_yaw = abs(ref_yaw - 2 * np.pi)
-        elif ref_yaw - yaw < -4.5:
-            ref_yaw = abs(ref_yaw + 2 * np.pi)
-        
-        stage_cost = terminal_cost_weights[0]*(x-ref_x)**2 + terminal_cost_weights[1]*(y-ref_y)**2 + terminal_cost_weights[2]*(yaw-ref_yaw)**2 
-        
-        # add penalty for collision with obstacles
-        # stage_cost += self.is_collided(x_T, pose_msg) * 1.0e10
+        stage_cost += np.expand_dims(self.is_collided(x_t, pose_msg), 1) * 1.0e10
 
         return stage_cost
 
@@ -339,13 +282,17 @@ class MPPI(Node):
         Returns:
             nearest_waypoint (Tuple): Returns waypoint index and information
         '''
-        cur_state = np.array([x, y]) 
-        distances = np.linalg.norm(cur_state - self.waypoints[:, :2], axis=1) # shape is (N,)
-        min_idx = np.argmin(distances)
-        wp_x, wp_y, wp_yaw, wp_v = self.waypoints[min_idx]
+        cur_state = np.hstack((x,y))
+
+        # Repeat for distance calculation (Shape == num_trajectories x len_waypoints x 2)
+        cur_state_repeat = np.repeat(np.expand_dims(cur_state, 1), len(self.waypoints), axis=1)
+        waypoints_repeat = np.repeat(np.expand_dims(self.waypoints[:, :2], 0), self.get_parameter("num_trajectories").value, axis=0)
+        distances = np.linalg.norm(cur_state_repeat - waypoints_repeat, axis=2)
+        min_idx = np.argmin(distances, axis=1)
+        wp_x, wp_y, wp_yaw, wp_v = np.hsplit(self.waypoints[min_idx], 4)
         return min_idx, wp_x, wp_y, wp_yaw, wp_v
-    
-    def is_collided(self, x_t: np.ndarray, pose_msg: Odometry) -> bool:
+
+    def is_collided(self, x_t: np.ndarray, pose_msg: Odometry) -> np.ndarray:
         '''
         Checks if the current state is collided with an obstacle
 
@@ -357,20 +304,25 @@ class MPPI(Node):
         '''
         occupancy_data = np.array(self.og.data).reshape((self.og.info.height, self.og.info.width))
 
-        car_x, car_y = pose_msg.pose.pose.position.x, pose_msg.pose.pose.position.y
+        qx = pose_msg.pose.pose.orientation.x
+        qy = pose_msg.pose.pose.orientation.y
+        qz = pose_msg.pose.pose.orientation.z
+        qw = pose_msg.pose.pose.orientation.w
+        yaw = np.arctan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy**2 + qz**2))
+
+        R = np.array([[np.cos(yaw), -np.sin(yaw)],
+                    [np.sin(yaw),  np.cos(yaw)]])
+        T = np.array([pose_msg.pose.pose.position.x,
+                      pose_msg.pose.pose.position.y])
 
         # convert the state into egocar frame, then occupancy grid frame
-        state_pos = np.array([x_t[0], x_t[1]])      
-        state_pos[0] -= car_x
-        state_pos[1] -= car_y
+        state_pos = np.dot(x_t[:, :2] - T, R)
+        
         state_pos_pixels = state_pos / self.og.info.resolution
-        state_pos_pixels[1] = state_pos_pixels[1] + (self.og.info.height / 2)
+        state_pos_pixels[:, 1] = state_pos_pixels[:, 1] + (self.og.info.height / 2)
         state_pos_pixels = np.clip(state_pos_pixels, 0, self.og.info.width - 1)
 
-        if occupancy_data[state_pos_pixels[1].astype(int), state_pos_pixels[0].astype(int)] > 0:
-            return True
-        
-        return False
+        return occupancy_data[state_pos_pixels[:, 1].astype(int), state_pos_pixels[:, 0].astype(int)] > 0
 
     def compute_weights(self, S: np.ndarray) -> np.ndarray:
         '''
@@ -384,18 +336,14 @@ class MPPI(Node):
         # Calculate rho
         rho = S.min()
 
-        param_lambda = 10.0 # TODO: Make parameter
+        param_lambda = 100.0 # TODO: Make parameter
 
         # Calculate eta
-        eta = 0.0
-        for k in range(self.get_parameter("num_trajectories").value):
-            eta += np.exp((-1.0/param_lambda) * (S[k]-rho))
+        eta = np.sum(np.exp((-1.0/param_lambda) * (S-rho)))
 
         # Calculate weight
-        w = np.zeros(self.get_parameter("num_trajectories").value)
-        for k in range(self.get_parameter("num_trajectories").value):
-            w[k] = (1.0 / eta) * np.exp( (-1.0/param_lambda) * (S[k]-rho) )
-        
+        w = (1.0 / eta) * np.exp( (-1.0/param_lambda) * (S-rho) )
+
         return w
 
     def moving_average(self, xx: np.ndarray, window_size: int) -> np.ndarray:
@@ -482,8 +430,6 @@ class MPPI(Node):
 
         if not self.get_parameter("visualize").value:
             return
-
-        # import ipdb; ipdb.set_trace()
 
         # Generate MarkerArray message
         marker_array = MarkerArray()
