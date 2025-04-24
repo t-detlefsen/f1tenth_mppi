@@ -82,6 +82,10 @@ class MPPI(Node):
                                                 self.get_parameter("marker_topic").value,
                                                 10)
 
+        # Visualize waypoints
+        if self.get_parameter("visualize").value:
+            self.publish_markers(self.waypoints, np.array([1.0, 0.0, 0.0]), "waypoints")
+
         # Create message_filters Subscribers
         self.scan_sub_ = Subscriber(self, LaserScan, self.get_parameter("scan_topic").value)
         self.pose_sub_ = Subscriber(self, Odometry, self.get_parameter("pose_topic").value)
@@ -163,6 +167,10 @@ class MPPI(Node):
         # Initialize state cost
         S = np.zeros(self.get_parameter("num_trajectories").value)
 
+        v = np.zeros((self.get_parameter("num_trajectories").value,
+                      self.get_parameter("steps_trajectories").value,
+                      2))
+
         # Loop through trajectories # NOTE: This outer loop can be vectorized
         for i in range(self.get_parameter("num_trajectories").value):
             # Reset state
@@ -172,21 +180,23 @@ class MPPI(Node):
             for j in range(1, self.get_parameter("steps_trajectories").value + 1):
                 # Sample control
                 if i < 0.95 * self.get_parameter("num_trajectories").value: # TODO: Make parameter
-                    u_step = u[j-1] + epsilon[i, j-1] # Exploitation (Add noise to control)
+                    v[i, j-1] = u[j-1] + epsilon[i, j-1] # Exploitation (Add noise to control)
                 else:
-                    u_step = epsilon[i, j-1] # Exploration (control is noise)
+                    v[i, j-1] = epsilon[i, j-1] # Exploration (control is noise)
 
                 # Clamp control inputs
-                u_step[0] = np.clip(u_step[0], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
-                u_step[1] = np.clip(u_step[1], -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
+                v[i, j-1, 0] = np.clip(v[i, j-1, 0], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
+                v[i, j-1, 1] = np.clip(v[i, j-1, 1], -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
 
                 # Update state
                 x = self.model.predict_euler(np.expand_dims(x, 0),
-                                             np.expand_dims(u_step, 0))
+                                             np.expand_dims(v[i, j-1], 0))
                 x = x.squeeze()
 
                 # Add stage cost
-                S[i] += self.compute_stage_cost(x, pose_msg)
+                param_gamma = 10 * (1.0 - 0.98)
+                correction = u[j-1] @ np.linalg.inv(sigma) @ v[i, j-1]
+                S[i] += self.compute_stage_cost(x, pose_msg) + param_gamma * correction
 
             # Add terminal cost
             S[i] += self.compute_terminal_cost(x, pose_msg)
@@ -205,6 +215,8 @@ class MPPI(Node):
         # Update control input sequence
         u += w_epsilon
 
+        # u = v[np.argmin(S)]
+
         u[:, 0] = np.clip(u[:, 0], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
         u[:, 1] = np.clip(u[:, 1], -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
         # --------------------------
@@ -212,16 +224,35 @@ class MPPI(Node):
         # Update control sequence
         self.u_prev[:-1] = u[1:]
         self.u_prev[-1] = u[-1]
+            
+        # # ALL TRAJECTORIES
+        # trajs = np.zeros((self.get_parameter("num_trajectories").value, self.get_parameter("steps_trajectories").value+1, 3))
+        # trajs[:, 0] = x0
+        # for i in range(self.get_parameter("steps_trajectories").value):
+        #     trajs[:, i+1] = self.model.predict_euler(trajs[:, i], v[:, i])
+        # self.publish_trajectories(trajs, ns="all")
 
-        # import ipdb
-        # ipdb.set_trace()
+        # # PSEUDO OPTIMAL
+        # idx = np.argmin(S)
+        # traj = np.zeros((self.get_parameter("steps_trajectories").value+1, 3))
+        # traj[0] = x0
+        # pseudo_cost = 0
+        # for i in range(self.get_parameter("steps_trajectories").value):
+        #     traj[i+1] = self.model.predict_euler(np.expand_dims(traj[i], 0),
+        #                                  np.expand_dims(v[idx, i], 0)).squeeze()
+        #     pseudo_cost += self.compute_stage_cost(traj[i+1], pose_msg)
+        # self.publish_trajectories(np.expand_dims(traj, 0), color=np.array([0.0, 1.0, 0.0]), ns="ps")
+
+        # OPTIMAL TRAJECTORY
         traj = np.zeros((self.get_parameter("steps_trajectories").value+1, 3))
         traj[0] = x0
+        cost = 0
         for i in range(self.get_parameter("steps_trajectories").value):
             traj[i+1] = self.model.predict_euler(np.expand_dims(traj[i], 0),
                                          np.expand_dims(u[i], 0)).squeeze()
-            
-        self.publish_trajectories(np.expand_dims(traj, 0))
+            cost += self.compute_stage_cost(traj[i+1], pose_msg)
+        print(f"Cost: {cost}")
+        self.publish_trajectories(np.expand_dims(traj, 0), color=np.array([1.0, 0.0, 0.0]), ns="opt")
 
         # Publish AckermannDriveStamped Message
         self.info_log.info("Publishing drive command")
@@ -262,7 +293,7 @@ class MPPI(Node):
         # print(f"Vehicle yaw: {yaw} Traj yaw: {ref_yaw}")
 
         # add penalty for collision with obstacles
-        stage_cost += self.is_collided(x_t, pose_msg) * 1.0e10
+        # stage_cost += self.is_collided(x_t, pose_msg) * 1.0e10
 
         return stage_cost
 
@@ -294,7 +325,7 @@ class MPPI(Node):
         stage_cost = terminal_cost_weights[0]*(x-ref_x)**2 + terminal_cost_weights[1]*(y-ref_y)**2 + terminal_cost_weights[2]*(yaw-ref_yaw)**2 
         
         # add penalty for collision with obstacles
-        stage_cost += self.is_collided(x_T, pose_msg) * 1.0e10
+        # stage_cost += self.is_collided(x_T, pose_msg) * 1.0e10
 
         return stage_cost
 
@@ -353,7 +384,7 @@ class MPPI(Node):
         # Calculate rho
         rho = S.min()
 
-        param_lambda = 100.0 # TODO: Make parameter
+        param_lambda = 10.0 # TODO: Make parameter
 
         # Calculate eta
         eta = 0.0
@@ -440,7 +471,7 @@ class MPPI(Node):
 
         return occupancy_grid
     
-    def publish_trajectories(self, points: np.ndarray, color: np.ndarray = np.array([0.0, 0.0, 1.0])):
+    def publish_trajectories(self, points: np.ndarray, color: np.ndarray = np.array([0.0, 0.0, 1.0]), ns: str = ""):
         '''
         Publish MarkerArray message of lines
 
@@ -459,6 +490,7 @@ class MPPI(Node):
         for j in range(points.shape[0]):
             for i in range(points.shape[1] - 1):
                 marker = Marker()
+                marker.ns = ns
                 marker.header.frame_id = "map"
                 marker.id = j * points.shape[1] + i
                 marker.header.stamp = self.get_clock().now().to_msg()
@@ -479,6 +511,43 @@ class MPPI(Node):
 
                 marker.points = [p1, p2]
                 marker_array.markers.append(marker)
+
+        # Publish MarkerArray Message
+        self.marker_pub_.publish(marker_array)
+    
+    def publish_markers(self, points: np.ndarray, color: np.ndarray = np.array([1.0, 0.0, 0.0]), ns: str = ""):
+        '''
+        Publish MarkerArray message of points
+
+        Args:
+            points (ndarray): Nx2 array of points to publish
+            color (ndarray): The color of the points
+        '''
+
+        if not self.get_parameter("visualize").value:
+            return
+        
+        # Generate MarkerArray message
+        marker_array = MarkerArray()
+        for i in range(len(points)):
+            marker = Marker()
+            marker.ns = ns
+            marker.header.frame_id = "map"
+            marker.id = i + 1
+            marker.header.stamp = self.get_clock().now().to_msg()
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.pose.position.x = points[i, 0]
+            marker.pose.position.y = points[i, 1]
+            marker.color.r = color[0]
+            marker.color.g = color[1]
+            marker.color.b = color[2]
+            marker.color.a = 1.0
+            marker.scale.x = 0.1
+            marker.scale.y = 0.1
+            marker.scale.z = 0.1
+
+            marker_array.markers.append(marker)
 
         # Publish MarkerArray Message
         self.marker_pub_.publish(marker_array)

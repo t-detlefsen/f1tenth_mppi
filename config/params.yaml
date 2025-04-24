@@ -7,7 +7,6 @@ MPPI:
     # Publisher Parameters
     drive_topic: "/drive"
     occupancy_topic: "/occupancy"
-    # cost_map_topic: "/cost_map"
     marker_topic: "/trajectory"
 
     # Subscriber Parameters
@@ -17,21 +16,18 @@ MPPI:
     # Model Parameters
     wheelbase: 0.33 # Wheelbase (m)
     min_throttle: 0.5 # Minimum throttle (m/s)
-    max_throttle: 1.5 # Maximum throttle (m/s)
-    max_steer: 0.4189 # Maximum steer (rad)
+    max_throttle: 1.0 # Maximum throttle (m/s)
+    max_steer: 0.8378 # Maximum steer (rad)
     dt: 0.1 # Timestep (s)
 
     # MPPI Parameters
     num_trajectories: 10
-    steps_trajectories: 10
-    v_sigma: 0.05
-    omega_sigma: 0.5
+    steps_trajectories: 25
+    v_sigma: 2.0
+    omega_sigma: 0.25
 
-    # # Cost Map Parameters
+    # Cost Map Parameters
     cost_map_width: 100
     cost_map_res: 0.05
-    # obstacle_weight: 10
-    # raceline_weight: 6.5
-    occupancy_dilation: 15
-    # raceline_dilation: 3
+    occupancy_dilation: 8
 
