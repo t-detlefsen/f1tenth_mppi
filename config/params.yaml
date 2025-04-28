@@ -15,15 +15,15 @@ MPPI:
 
     # Model Parameters
     wheelbase: 0.33 # Wheelbase (m)
-    min_throttle: 1.0 # Minimum throttle (m/s)
+    min_throttle: 0.5 # Minimum throttle (m/s)
     max_throttle: 1.0 # Maximum throttle (m/s)
     max_steer: 0.8378 # Maximum steer (rad)
     dt: 0.1 # Timestep (s)
 
     # MPPI Parameters
     num_trajectories: 100
-    steps_trajectories: 10
-    v_sigma: 0.2
+    steps_trajectories: 15
+    v_sigma: 0.05
     omega_sigma: 0.01
 
     # Cost Map Parameters

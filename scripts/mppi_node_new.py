@@ -60,8 +60,10 @@ class MPPI(Node):
         # Load Waypoints
         try:
             self.waypoints = load_waypoints(self.get_parameter("waypoint_path").value)
-            self.waypoints[:, 3] = np.clip(self.waypoints[:, 3], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
-            # self.waypoints[:, 3] = (self.waypoints[:, 3]) / np.max(self.waypoints[:, 3]) * self.get_parameter("max_throttle").value
+            # self.waypoints[:, 3] = np.clip(self.waypoints[:, 3], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
+            min_v = np.min(self.waypoints[:, 3]); max_v = max(self.waypoints[:, 3])
+            self.waypoints[:, 3] = (self.waypoints[:, 3] - min_v) / (max_v - min_v)
+            self.waypoints[:, 3] = self.waypoints[:, 3] * (self.get_parameter("max_throttle").value - self.get_parameter("min_throttle").value) + self.get_parameter("min_throttle").value
         except Exception as e:
             self.error_log.error("Issue loading waypoints")
             self.error_log.error(e)
@@ -190,15 +192,15 @@ class MPPI(Node):
             # Add stage cost
             # param_gamma = 100 * (1.0 - 0.98)
             # correction = u[0] @ np.linalg.inv(sigma) @ np.transpose(v[:, 0])
-            S += self.compute_cost(x[:, j], v[:, j, 0], pose_msg).squeeze()# + param_gamma * correction
+            S += self.compute_cost(x[:, j], v[:, j-1, 0], pose_msg).squeeze()# + param_gamma * correction
             
             # # Different formulation
             # S += (v[:, j, 0] ** 2) * 0.01 + (v[:, j, 0] ** 2) * 0.75 + \
             #      self.compute_cost(x[:, j], v[:, j, 0], pose_msg).squeeze()
                 #  ((v[:, j, 0] - v[:, j - 1, 0]) ** 2) * 0.01 + ((v[:, j, 1] - v[:, j - 1, 1]) ** 2) * 100
 
-        # # Add terminal cost
-        S += self.compute_cost(x[:, j], v[:, j, 0], pose_msg).squeeze() * 10
+        # Add terminal cost
+        S += self.compute_cost(x[:, j], v[:, j-1, 0], pose_msg).squeeze() * 10
 
         # Compute information theoretic weights for each sample ???
         w = self.compute_weights(S)
@@ -253,7 +255,7 @@ class MPPI(Node):
             stage_cost (float): computed stage cost
         '''
 
-        stage_cost_weights = [13.5, 13.5, 5.5, 5.5] # TODO: add these to params.yaml
+        stage_cost_weights = [13.5, 13.5, 5.5, 5.0] # TODO: add these to params.yaml
         x, y, yaw = np.hsplit(x_t, 3)
         v = np.expand_dims(v_t, 1)
         yaw[yaw < 0] = yaw[yaw < 0] + 2 * np.pi
@@ -272,10 +274,10 @@ class MPPI(Node):
         )
 
         stage_cost = stage_cost_weights[0]*(x-ref_x)**2 + stage_cost_weights[1]*(y-ref_y)**2 + \
-                     stage_cost_weights[2]*(ref_yaw-ref_yaw)**2 + stage_cost_weights[3]*(v-ref_v)**2
+                     stage_cost_weights[2]*(yaw-ref_yaw)**2 + stage_cost_weights[3]*(v-ref_v)**2
 
-        # add penalty for collision with obstacles
-        stage_cost += np.expand_dims(self.is_collided(x_t, pose_msg), 1) * 1.0e10
+        # # add penalty for collision with obstacles
+        # stage_cost += np.expand_dims(self.is_collided(x_t, pose_msg), 1) * 1.0e10
 
         return stage_cost
 
