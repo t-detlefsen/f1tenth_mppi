@@ -122,6 +122,7 @@ class MPPI(Node):
                 ('steps_trajectories', None),
                 ('v_sigma', None),
                 ('omega_sigma', None),
+                ('lambda', None),
                 ('cost_map_width', None),
                 ('cost_map_res', None),
                 ('occupancy_dilation', None),
@@ -276,8 +277,8 @@ class MPPI(Node):
         stage_cost = stage_cost_weights[0]*(x-ref_x)**2 + stage_cost_weights[1]*(y-ref_y)**2 + \
                      stage_cost_weights[2]*(yaw-ref_yaw)**2 + stage_cost_weights[3]*(v-ref_v)**2
 
-        # # add penalty for collision with obstacles
-        # stage_cost += np.expand_dims(self.is_collided(x_t, pose_msg), 1) * 1.0e10
+        # add penalty for collision with obstacles
+        stage_cost += np.expand_dims(self.is_collided(x_t, pose_msg), 1) * 1.0e10
 
         return stage_cost
 
@@ -345,13 +346,11 @@ class MPPI(Node):
         # Calculate rho
         rho = S.min()
 
-        param_lambda = 0.1 # TODO: Make parameter
-
         # Calculate eta
-        eta = np.sum(np.exp((-1.0/param_lambda) * (S-rho)))
+        eta = np.sum(np.exp((-1.0/self.get_parameter("lambda").value) * (S-rho)))
 
         # Calculate weight
-        w = (1.0 / eta) * np.exp( (-1.0/param_lambda) * (S-rho) )
+        w = (1.0 / eta) * np.exp( (-1.0/self.get_parameter("lambda").value) * (S-rho) )
 
         return w
 
@@ -413,8 +412,8 @@ class MPPI(Node):
         # Mark occupied cells in the grid
         occupancy_grid[x_coords, y_coords] = 100
 
-        # Ignore wires in lidar sweep
-        occupancy_grid[45:55, 0:10] = 0 # TODO: Put this in real world coordinates
+        # # Ignore wires in lidar sweep
+        # occupancy_grid[45:55, 0:10] = 0 # TODO: Put this in real world coordinates
 
         # Apply binary dilation to expand obstacles
         dilation_kernel = np.ones((self.get_parameter("occupancy_dilation").value, self.get_parameter("occupancy_dilation").value), dtype=bool)
