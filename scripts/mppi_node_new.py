@@ -159,7 +159,9 @@ class MPPI(Node):
         mu = np.zeros(2)
         sigma = np.array([[self.get_parameter("v_sigma").value, 0.0],
                           [0.0, self.get_parameter("omega_sigma").value]])
-        epsilon = np.random.multivariate_normal(mu, sigma, (self.get_parameter("num_trajectories").value, self.get_parameter("steps_trajectories").value))
+
+        epsilon = np.random.multivariate_normal(mu, sigma, (self.get_parameter("num_trajectories").value - 1, self.get_parameter("steps_trajectories").value))
+        epsilon = np.vstack((np.zeros((1, self.get_parameter("steps_trajectories").value, 2)), epsilon))
 
         # Initialize state cost
         S = np.zeros(self.get_parameter("num_trajectories").value)
@@ -186,22 +188,28 @@ class MPPI(Node):
             x[:, j] = self.model.predict_euler(x[:, j-1], v[:, j-1])
 
             # Add stage cost
-            param_gamma = 100 * (1.0 - 0.98)
-            correction = u[0] @ np.linalg.inv(sigma) @ np.transpose(v[:, 0])
-            S += self.compute_cost(x[:, j], v[:, 0, 0], pose_msg).squeeze() + param_gamma * correction
+            # param_gamma = 100 * (1.0 - 0.98)
+            # correction = u[0] @ np.linalg.inv(sigma) @ np.transpose(v[:, 0])
+            S += self.compute_cost(x[:, j], v[:, j, 0], pose_msg).squeeze()# + param_gamma * correction
+            
+            # # Different formulation
+            # S += (v[:, j, 0] ** 2) * 0.01 + (v[:, j, 0] ** 2) * 0.75 + \
+            #      self.compute_cost(x[:, j], v[:, j, 0], pose_msg).squeeze()
+                #  ((v[:, j, 0] - v[:, j - 1, 0]) ** 2) * 0.01 + ((v[:, j, 1] - v[:, j - 1, 1]) ** 2) * 100
 
         # # Add terminal cost
-        # S += self.compute_cost(x[:, j], pose_msg)
+        S += self.compute_cost(x[:, j], v[:, j, 0], pose_msg).squeeze() * 10
 
         # Compute information theoretic weights for each sample ???
         w = self.compute_weights(S)
 
         # Calculate + smooth added noise
         w_epsilon = np.sum(np.multiply(w[:, np.newaxis, np.newaxis], epsilon), axis=0)
-        w_epsilon = self.moving_average(w_epsilon, 10)
+        w_epsilon = self.moving_average(w_epsilon, 4)
 
         # Update control input sequence
         u += w_epsilon
+        # u = v[np.argmin(S)]
 
         u[:, 0] = np.clip(u[:, 0], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
         u[:, 1] = np.clip(u[:, 1], -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
@@ -216,9 +224,8 @@ class MPPI(Node):
         # trajs[:, 0] = x0
         # for i in range(self.get_parameter("steps_trajectories").value):
         #     trajs[:, i+1] = self.model.predict_euler(trajs[:, i], v[:, i])
-        # self.publish_trajectories(trajs, ns="all")
-
-        print(np.min(S))
+        # self.publish_trajectories(trajs[:10], ns="all")
+        # # print(S)
 
         # OPTIMAL TRAJECTORY
         traj = np.zeros((self.get_parameter("steps_trajectories").value+1, 3))
@@ -246,7 +253,7 @@ class MPPI(Node):
             stage_cost (float): computed stage cost
         '''
 
-        stage_cost_weights = [50.0, 50.0, 1.0, 20.0] # TODO: add these to params.yaml
+        stage_cost_weights = [13.5, 13.5, 5.5, 5.5] # TODO: add these to params.yaml
         x, y, yaw = np.hsplit(x_t, 3)
         v = np.expand_dims(v_t, 1)
         yaw[yaw < 0] = yaw[yaw < 0] + 2 * np.pi
@@ -336,7 +343,7 @@ class MPPI(Node):
         # Calculate rho
         rho = S.min()
 
-        param_lambda = 100.0 # TODO: Make parameter
+        param_lambda = 0.1 # TODO: Make parameter
 
         # Calculate eta
         eta = np.sum(np.exp((-1.0/param_lambda) * (S-rho)))
@@ -434,7 +441,7 @@ class MPPI(Node):
         # Generate MarkerArray message
         marker_array = MarkerArray()
         for j in range(points.shape[0]):
-            for i in range(points.shape[1] - 1):
+            for i in range(0, points.shape[1] - 1, 2):
                 marker = Marker()
                 marker.ns = ns
                 marker.header.frame_id = "map"
