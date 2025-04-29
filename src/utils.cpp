@@ -61,16 +61,11 @@ void publish_trajectory(rclcpp::Publisher<visualization_msgs::msg::MarkerArray>:
     for (unsigned long i = 1; i < points.size(); i++) {
         visualization_msgs::msg::Marker marker;
         marker.header.frame_id = "map";
-        marker.ns = "trajectory";
+        marker.ns = "opt";
         marker.id = i;
         marker.type = visualization_msgs::msg::Marker::LINE_LIST;
         marker.action = visualization_msgs::msg::Marker::ADD;
-        marker.pose.position.x = points[i][0];
-        marker.pose.position.y = points[i][1];
-        marker.pose.position.z = 0.0;
-        marker.scale.x = 0.1;
-        marker.scale.y = 0.1;
-        marker.scale.z = 0.1;
+        marker.scale.x = 0.01;
         marker.color.r = 1.0f;
         marker.color.a = 1.0f;
 

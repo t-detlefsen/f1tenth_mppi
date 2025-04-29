@@ -245,8 +245,6 @@ public:
         for (int i = 1; i < this->get_parameter("steps_trajectories").as_int(); i++) {
             x_traj.push_back(model.predict_euler(x_traj[i-1], u[i]));
         }
-
-        /// TODO: Figure out why visualization is weird
         publish_trajectory(marker_pub_, x_traj);
 
         // Publish AckermannDriveStamped Message
