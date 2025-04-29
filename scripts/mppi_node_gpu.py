@@ -2,6 +2,7 @@
 
 import copy
 import math
+import time
 import numpy as np
 from scipy.ndimage import binary_dilation
 from typing import Tuple
@@ -63,8 +64,9 @@ class MPPI(Node):
         # Load Waypoints
         try:
             self.waypoints = torch.from_numpy(load_waypoints(self.get_parameter("waypoint_path").value)).to(self.device)
-            self.waypoints[:, 3] = torch.clip(self.waypoints[:, 3], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
-            # self.waypoints[:, 3] = (self.waypoints[:, 3]) / np.max(self.waypoints[:, 3]) * self.get_parameter("max_throttle").value
+            min_v = torch.min(self.waypoints[:, 3]); max_v = max(self.waypoints[:, 3])
+            self.waypoints[:, 3] = (self.waypoints[:, 3] - min_v) / (max_v - min_v)
+            self.waypoints[:, 3] = self.waypoints[:, 3] * (self.get_parameter("max_throttle").value - self.get_parameter("min_throttle").value) + self.get_parameter("min_throttle").value
         except Exception as e:
             self.error_log.error("Issue loading waypoints")
             self.error_log.error(e)
@@ -123,6 +125,7 @@ class MPPI(Node):
                 ('steps_trajectories', None),
                 ('v_sigma', None),
                 ('omega_sigma', None),
+                ('lambda', None),
                 ('cost_map_width', None),
                 ('cost_map_res', None),
                 ('occupancy_dilation', None),
@@ -189,6 +192,9 @@ class MPPI(Node):
             # Clamp control inputs
             v[:, j-1, 0] = torch.clip(v[:, j-1, 0], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
             v[:, j-1, 1] = torch.clip(v[:, j-1, 1], -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
+
+            # Update noise w/ clamping
+            epsilon[:, j-1] = v[:, j-1] - u[j-1]
 
             # Update state
             x[:, j] = self.model.predict_euler(x[:, j-1], v[:, j-1])
@@ -354,13 +360,11 @@ class MPPI(Node):
         # Calculate rho
         rho = S.min()
 
-        param_lambda = 0.1 # TODO: Make parameter
-
         # Calculate eta
-        eta = torch.sum(torch.exp((-1.0/param_lambda) * (S-rho)))
+        eta = torch.sum(torch.exp((-1.0/self.get_parameter("lambda").value) * (S-rho)))
 
         # Calculate weight
-        w = (1.0 / eta) * torch.exp( (-1.0/param_lambda) * (S-rho) )
+        w = (1.0 / eta) * torch.exp( (-1.0/self.get_parameter("lambda").value) * (S-rho) )
 
         return w
 
@@ -436,8 +440,8 @@ class MPPI(Node):
         # Mark occupied cells in the grid
         occupancy_grid[x_coords, y_coords] = 100
 
-        # Ignore wires in lidar sweep
-        occupancy_grid[45:55, 0:10] = 0 # TODO: Put this in real world coordinates
+        # # Ignore wires in lidar sweep
+        # occupancy_grid[45:55, 0:10] = 0 # TODO: Put this in real world coordinates
 
         # Apply binary dilation to expand obstacles
         dilation_kernel = torch.ones((self.get_parameter("occupancy_dilation").value, self.get_parameter("occupancy_dilation").value), dtype=torch.bool, device=self.device)
