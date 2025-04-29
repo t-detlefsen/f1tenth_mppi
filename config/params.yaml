@@ -24,7 +24,7 @@ MPPI:
     num_trajectories: 100
     steps_trajectories: 25
     v_sigma: 0.05
-    omega_sigma: 0.1
+    omega_sigma: 0.2
     lambda: 10
 
     # Cost Map Parameters

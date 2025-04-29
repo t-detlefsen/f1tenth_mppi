@@ -108,7 +108,7 @@ class KBM(dynamics_model_base):
         # Perform update
         x_dot = v * np.cos(theta)
         y_dot = v * np.sin(theta)
-        theta_dot = omega
+        theta_dot = v * np.tan(omega) / dynamics_model_base.L
 
         new_state = np.concatenate([x_dot, y_dot, theta_dot], axis=1)
 

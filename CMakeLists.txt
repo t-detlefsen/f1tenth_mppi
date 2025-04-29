@@ -23,7 +23,8 @@ foreach(PACKAGE
   std_msgs
   visualization_msgs
   Eigen3
-  tf2_ros)
+  tf2_ros
+  message_filters)
 
   find_package(${PACKAGE} REQUIRED)
 
@@ -34,6 +35,18 @@ include_directories(include)
 include_directories(
   ${EIGEN3_INCLUDE_DIRS}
 )
+
+# Create Cpp executable
+add_executable(mppi_node src/mppi_node.cpp src/utils.cpp src/dynamics_models.cpp)
+
+ament_target_dependencies(mppi_node 
+  rclcpp geometry_msgs ackermann_msgs nav_msgs sensor_msgs std_msgs visualization_msgs tf2_ros message_filters
+)
+
+# Install Cpp executables
+install(TARGETS
+  mppi_node
+  DESTINATION lib/${PROJECT_NAME})
 
 # Install Python modules
 ament_python_install_package(${PROJECT_NAME})

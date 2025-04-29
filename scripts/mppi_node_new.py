@@ -2,6 +2,7 @@
 
 import copy
 import math
+import time
 import numpy as np
 from scipy.ndimage import binary_dilation
 from typing import Tuple
@@ -136,8 +137,13 @@ class MPPI(Node):
             scan_msg (LaserScan): LaserScan data from the LiDAR
             pose_msg (Odometry): Odometry message from the particle filter
         '''
-
-        self.info_log.info("Recieved scan_msg and pose_msg")
+        
+        # time.sleep(0.1)
+        # self.info_log.info("Recieved scan_msg and pose_msg")
+        # drive_msg = AckermannDriveStamped()
+        # drive_msg.drive.speed = 0.0
+        # drive_msg.drive.steering_angle = self.u_prev[0, 1]
+        # self.drive_pub_.publish(drive_msg)
 
         # Create Occupancy Grid
         self.info_log.info("Creating occupancy grid")
@@ -186,6 +192,9 @@ class MPPI(Node):
             # Clamp control inputs
             v[:, j-1, 0] = np.clip(v[:, j-1, 0], self.get_parameter("min_throttle").value, self.get_parameter("max_throttle").value)
             v[:, j-1, 1] = np.clip(v[:, j-1, 1], -self.get_parameter("max_steer").value, self.get_parameter("max_steer").value)
+
+            # Update noise w/ clamping
+            epsilon[:, j-1] = v[:, j-1] - u[j-1]
 
             # Update state
             x[:, j] = self.model.predict_euler(x[:, j-1], v[:, j-1])
