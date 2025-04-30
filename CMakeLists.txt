@@ -56,6 +56,7 @@ install(PROGRAMS
   scripts/mppi_node.py
   scripts/mppi_node_new.py
   scripts/mppi_node_gpu.py
+  scripts/mppi_node_cupy.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

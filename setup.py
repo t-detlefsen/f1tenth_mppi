@@ -23,6 +23,7 @@ setup(
             'mppi_node = f1tenth_mppi.mppi_node:main',
             'mppi_node_new = f1tenth_mppi.mppi_node_new:main',
             'mppi_node_gpu = f1tenth_mppi.mppi_node_gpu:main',
+            'mppi_node_cupy = f1tenth_mppi.mppi_node_cupy:main',
         ],
     },
 )

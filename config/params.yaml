@@ -15,8 +15,8 @@ MPPI:
 
     # Model Parameters
     wheelbase: 0.33 # Wheelbase (m)
-    min_throttle: 0.75 # Minimum throttle (m/s)
-    max_throttle: 1.0 # Maximum throttle (m/s)
+    min_throttle: 0.5 # Minimum throttle (m/s)
+    max_throttle: 0.5 # Maximum throttle (m/s)
     max_steer: 0.8378 # Maximum steer (rad)
     dt: 0.1 # Timestep (s)
 
