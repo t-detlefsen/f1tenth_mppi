@@ -16,6 +16,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Point
+from transforms3d.euler import quat2euler
 
 from f1tenth_mppi.utils import *
 from f1tenth_mppi.dynamics_models import KBM
@@ -123,11 +124,11 @@ class MPPI(Node):
                 ('omega_sigma', None),
                 ('cost_map_width', None),
                 ('cost_map_res', None),
-                ('dist_cost_mult', None),
                 ('obstacle_weight', None),
                 ('raceline_weight', None),
                 ('obstacle_dilation', None),
                 ('raceline_dilation', None),
+                ('heading_weight', None),
             ])
         
     def callback(self, scan_msg: LaserScan, pose_msg: Odometry):
@@ -151,6 +152,7 @@ class MPPI(Node):
             cost_map = self.update_cost_map(occupancy_grid)
         except Exception as e:
             self.warn_log.warn("Error updating cost map, skipping iteration")
+            print(e)
             return
 
         # Create Trajectories
@@ -160,7 +162,14 @@ class MPPI(Node):
 
         # Evaluate Trajectories
         self.info_log.info("Evaluating trajectories")
-        min_cost_idx = self.evaluate_trajectories(cost_map, trajectories)
+        min_cost_idx = self.evaluate_trajectories(cost_map, trajectories, occupancy_grid)
+
+        if min_cost_idx == -1:
+            drive_msg = AckermannDriveStamped()
+            drive_msg.drive.steering_angle = actions[min_cost_idx, 0, 1]
+            drive_msg.drive.speed = 0.0
+            self.drive_pub_.publish(drive_msg)
+            return
 
         # # Update u_mean
         # self.u_mean = actions[min_cost_idx, 0]
@@ -271,18 +280,21 @@ class MPPI(Node):
         raceline_mask = binary_dilation(raceline_mask, structure=dilation_kernel).astype(int) * 100
 
         # Compute the distance from raceline, for each grid cell
-        raceline_cost = self.get_parameter("dist_cost_mult").value * distance_transform_edt(raceline_mask == 0)
+        raceline_cost = distance_transform_edt(raceline_mask == 0)
 
         # Final cost map is a weighted sum of the obstacle cost and raceline cost
-        cost_map = self.get_parameter("obstacle_weight").value * occupancy_grid + self.get_parameter("raceline_weight").value * raceline_cost
+        cost_map = self.get_parameter("raceline_weight").value * raceline_cost
+        # cost_map = 100 * (cost_map / cost_map.max()) # normalize so that it's within 0-100
+        # cost_map = np.clip(cost_map, 0, 100).astype(int) # NOTE: Should we be clipping or normalizing? Do we need to?
 
         if self.get_parameter("visualize").value:
-            cost_map = np.clip(cost_map, 0, 100).astype(int) # NOTE: Should we be clipping or normalizing? Do we need to?
-            self.cost_map.data = cost_map.flatten().tolist()
+            # normalize so that it's within 0-100
+            cost_map_vis = 100 * (cost_map / cost_map.max())
+            self.cost_map.data = cost_map_vis.astype(int).flatten().tolist()
             self.cost_map.header.stamp = self.get_clock().now().to_msg()
             self.cost_map_pub_.publish(self.cost_map)
 
-        return cost_map
+        return cost_map / cost_map.max()
 
     def sample_trajectories(self, num_trajectories: int, steps_trajectories: int):
         '''
@@ -300,7 +312,7 @@ class MPPI(Node):
         # v = self.u_mean[0] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("v_sigma").value
         # omega = self.u_mean[1] + np.random.randn(num_trajectories, steps_trajectories - 1, 1) * self.get_parameter("omega_sigma").value
 
-        v = (self.u_mean[0] + np.random.randn(num_trajectories, 1, 1) * self.get_parameter("v_sigma").value)
+        v = (self.get_parameter("max_throttle").value + np.random.randn(num_trajectories, 1, 1) * self.get_parameter("v_sigma").value)
         omega = (self.u_mean[1] + np.random.randn(num_trajectories, 1, 1) * self.get_parameter("omega_sigma").value)
 
         v = np.repeat(v, steps_trajectories - 1, axis=1)
@@ -322,13 +334,14 @@ class MPPI(Node):
 
         return trajectories, actions
     
-    def evaluate_trajectories(self, cost_map: np.ndarray, trajectories: np.ndarray) -> int:
+    def evaluate_trajectories(self, cost_map: np.ndarray, trajectories: np.ndarray, occupancy_grid: np.ndarray) -> int:
         '''
         Evaluate trajectories using the cost map
 
         Args:
             cost_map (ndarray): The cost map
             trajectories (np.ndarray): (num_trajectories x steps_trajectories x 3) Sampled trajectories
+            occupancy_grid (ndarray): The processed occupancy grid
         Returns:
             min_cost_idx (int): The index of the trajectory with the lowest cost
         '''
@@ -341,8 +354,28 @@ class MPPI(Node):
         # Handle trajectories that fall outside of the cost map
         trajectories_pixels = np.clip(trajectories_pixels[:, :, :2], 0, self.cost_map.info.width - 1)
 
-        # Evaluate trajectories and determine the lowest cost
+        # if a trajectory touches an obstacle, then just completely ignore it 
+        # print(f"shape of traj pixels is {trajectories_pixels.shape}") # NxTx3
+        # print(f"Shape of occupancy grid is {occupancy_grid.shape}")
+
+        # bad_traj = [1, 0, 1, 0, 0,.. N]
+        check_obs = occupancy_grid.astype(bool)[trajectories_pixels[:, :, 1].astype(int), trajectories_pixels[:, :, 0].astype(int)] # NxT
+        bad_trajs = np.any(check_obs==True, axis=1) # (N,)
+
+        for i in range(check_obs.shape[0]):
+            try:
+                idx = np.where(check_obs[i] == True)[0][0]
+                check_obs[i, idx:] = True
+            except:
+                pass
+
+        # Compute each trajectory's position score and normalize
         traj_scores = np.sum(cost_map[trajectories_pixels[:, :, 1].astype(int), trajectories_pixels[:, :, 0].astype(int)], axis=1)
+        traj_scores /= traj_scores.max()
+
+        traj_scores[bad_trajs] = 50
+        # if np.all(traj_scores == np.inf):
+        #     return -1
         min_cost_idx = np.argmin(traj_scores)
 
         # Publish a lowest cost trajectory
